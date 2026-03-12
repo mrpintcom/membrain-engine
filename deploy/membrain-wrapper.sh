@@ -32,6 +32,22 @@ remove_hosts_entry() {
   fi
 }
 
+enable_pf() {
+  if [ -f /etc/pf.anchors/membrain ]; then
+    sudo pfctl -f /etc/pf.conf 2>/dev/null || true
+    sudo pfctl -e 2>/dev/null || true
+  fi
+}
+
+disable_pf() {
+  if [ -f /etc/pf.anchors/membrain ]; then
+    sudo rm -f /etc/pf.anchors/membrain
+    sudo sed -i '' '/membrain/d' /etc/pf.conf 2>/dev/null || true
+    sudo pfctl -f /etc/pf.conf 2>/dev/null || true
+    echo -e "${YELLOW}Port forwarding removed${NC}"
+  fi
+}
+
 cmd_status() {
   check_installed
   echo "Membrain Status"
@@ -76,6 +92,7 @@ cmd_start() {
   echo "Starting Membrain..."
   docker compose -f "$COMPOSE_FILE" start
   add_hosts_entry
+  enable_pf
 
   # Wait for health
   echo -n "Waiting for gateway"
@@ -125,8 +142,9 @@ cmd_uninstall() {
   docker compose -f "$COMPOSE_FILE" down -v --rmi all 2>/dev/null || true
   echo "  Stopped and removed containers"
 
-  # 3. Remove /etc/hosts entry
+  # 3. Remove /etc/hosts entry and pf rules
   remove_hosts_entry
+  disable_pf
 
   # 4. Unload launchd plist
   local plist_path="${HOME}/Library/LaunchAgents/com.membrain.docker.plist"

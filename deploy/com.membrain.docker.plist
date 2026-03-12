@@ -10,7 +10,7 @@
   <array>
     <string>/bin/bash</string>
     <string>-c</string>
-    <string>for i in $(seq 1 60); do docker info &gt;/dev/null 2&gt;&amp;1 &amp;&amp; break; sleep 3; done; cd "$HOME/.membrain" &amp;&amp; docker compose up -d; grep -q "# membrain" /etc/hosts || echo "127.0.0.1 api.anthropic.com  # membrain" | sudo tee -a /etc/hosts &gt;/dev/null</string>
+    <string>for i in $(seq 1 60); do docker info &gt;/dev/null 2&gt;&amp;1 &amp;&amp; break; sleep 3; done; cd "$HOME/.membrain" &amp;&amp; docker compose up -d; grep -q "# membrain" /etc/hosts || echo "127.0.0.1 api.anthropic.com  # membrain" | sudo tee -a /etc/hosts &gt;/dev/null; sudo pfctl -f /etc/pf.conf 2&gt;/dev/null; sudo pfctl -e 2&gt;/dev/null</string>
   </array>
 
   <key>RunAtLoad</key>

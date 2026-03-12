@@ -30,6 +30,11 @@ cleanup_on_failure() {
   if grep -q "# membrain" /etc/hosts 2>/dev/null; then
     sudo sed -i '' '/# membrain/d' /etc/hosts 2>/dev/null || true
   fi
+  if [ -f /etc/pf.anchors/membrain ]; then
+    sudo rm -f /etc/pf.anchors/membrain 2>/dev/null || true
+    sudo sed -i '' '/membrain/d' /etc/pf.conf 2>/dev/null || true
+    sudo pfctl -f /etc/pf.conf 2>/dev/null || true
+  fi
   if [ -f "${MEMBRAIN_HOME}/certs/membrain-ca.pem" ]; then
     sudo security remove-trusted-cert -d "${MEMBRAIN_HOME}/certs/membrain-ca.pem" 2>/dev/null || true
   fi
@@ -133,21 +138,13 @@ if ! docker info &>/dev/null 2>&1; then
   fi
 fi
 
-# Check ports
-if lsof -i :443 -sTCP:LISTEN &>/dev/null 2>&1; then
-  port_user=$(lsof -i :443 -sTCP:LISTEN 2>/dev/null | tail -1 | awk '{print $1}')
-  if [ "$port_user" = "com.docke" ] || [ "$port_user" = "docker" ] || [ "$port_user" = "vpnkit" ]; then
-    warn "Docker is using port 443 — will be released when we start our stack."
-  elif [ "$port_user" = "Claude" ]; then
-    warn "Claude Desktop is using port 443 — it will reconnect through Membrain."
-  else
-    fail "Port 443 is in use by '${port_user}'. Please stop it and re-run."
+# Check ports (8443 for Caddy TLS, 8001 for dashboard)
+for check_port in 8443 8001; do
+  if lsof -i ":${check_port}" -sTCP:LISTEN &>/dev/null 2>&1; then
+    port_user=$(lsof -i ":${check_port}" -sTCP:LISTEN 2>/dev/null | tail -1 | awk '{print $1}')
+    fail "Port ${check_port} is in use by '${port_user}'. Please stop it and re-run."
   fi
-fi
-if lsof -i :8001 -sTCP:LISTEN &>/dev/null 2>&1; then
-  port_user=$(lsof -i :8001 -sTCP:LISTEN 2>/dev/null | tail -1 | awk '{print $1}')
-  fail "Port 8001 is in use by '${port_user}'. Please stop it and re-run."
-fi
+done
 
 # ─── API Key ──────────────────────────────────────────────
 
@@ -288,6 +285,18 @@ if ! grep -q "# membrain" /etc/hosts 2>/dev/null; then
   echo "127.0.0.1 api.anthropic.com  # membrain" | sudo tee -a /etc/hosts >/dev/null
 fi
 info "DNS routing configured"
+
+# Set up pf to redirect 443 → 8443 on loopback
+# (port 443 is reserved by macOS system services)
+echo "rdr pass on lo0 proto tcp from any to 127.0.0.1 port 443 -> 127.0.0.1 port 8443" \
+  | sudo tee /etc/pf.anchors/membrain >/dev/null
+if ! grep -q "membrain" /etc/pf.conf 2>/dev/null; then
+  echo "rdr-anchor \"membrain\"" | sudo tee -a /etc/pf.conf >/dev/null
+  echo "load anchor \"membrain\" from \"/etc/pf.anchors/membrain\"" | sudo tee -a /etc/pf.conf >/dev/null
+fi
+sudo pfctl -f /etc/pf.conf 2>/dev/null || true
+sudo pfctl -e 2>/dev/null || true
+info "Port forwarding configured (443 → 8443)"
 
 # ─── Health Check ─────────────────────────────────────────
 
