@@ -138,6 +138,8 @@ if lsof -i :443 -sTCP:LISTEN &>/dev/null 2>&1; then
   port_user=$(lsof -i :443 -sTCP:LISTEN 2>/dev/null | tail -1 | awk '{print $1}')
   if [ "$port_user" = "com.docke" ] || [ "$port_user" = "docker" ] || [ "$port_user" = "vpnkit" ]; then
     warn "Docker is using port 443 — will be released when we start our stack."
+  elif [ "$port_user" = "Claude" ]; then
+    warn "Claude Desktop is using port 443 — it will reconnect through Membrain."
   else
     fail "Port 443 is in use by '${port_user}'. Please stop it and re-run."
   fi
