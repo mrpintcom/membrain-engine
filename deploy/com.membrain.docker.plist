@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.membrain.docker</string>
+
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/bash</string>
+    <string>-c</string>
+    <string>for i in $(seq 1 60); do docker info &gt;/dev/null 2&gt;&amp;1 &amp;&amp; break; sleep 3; done; cd "$HOME/.membrain" &amp;&amp; docker compose up -d; grep -q "# membrain" /etc/hosts || echo "127.0.0.1 api.anthropic.com  # membrain" | sudo tee -a /etc/hosts &gt;/dev/null</string>
+  </array>
+
+  <key>RunAtLoad</key>
+  <true/>
+
+  <key>StandardOutPath</key>
+  <string>/tmp/membrain-launchd.log</string>
+  <key>StandardErrorPath</key>
+  <string>/tmp/membrain-launchd.err</string>
+</dict>
+</plist>

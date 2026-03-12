@@ -1,0 +1,8 @@
+{
+	auto_https off
+}
+
+:443 {
+	tls /certs/api.anthropic.com.pem /certs/api.anthropic.com-key.pem
+	reverse_proxy gateway:8000
+}
