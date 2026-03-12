@@ -146,33 +146,33 @@ for check_port in 8443 8001; do
   fi
 done
 
-# ─── API Key ──────────────────────────────────────────────
+# ─── API Key (optional) ───────────────────────────────────
 
 echo ""
-echo -n "  Enter your Anthropic API key: "
+echo -n "  Enter your Anthropic API key (or press Enter to skip): "
 read -r api_key </dev/tty
 
-if [ -z "$api_key" ]; then
-  fail "API key is required."
-fi
+if [ -n "$api_key" ]; then
+  step "Verifying API key..."
+  http_code=$(curl -s -o /dev/null -w "%{http_code}" \
+    -H "x-api-key: ${api_key}" \
+    -H "content-type: application/json" \
+    -H "anthropic-version: 2023-06-01" \
+    -d '{"model":"claude-haiku-4-5-20251001","max_tokens":1,"messages":[{"role":"user","content":"hi"}]}' \
+    "https://api.anthropic.com/v1/messages" 2>/dev/null || echo "000")
 
-# Validate key
-step "Verifying API key..."
-http_code=$(curl -s -o /dev/null -w "%{http_code}" \
-  -H "x-api-key: ${api_key}" \
-  -H "content-type: application/json" \
-  -H "anthropic-version: 2023-06-01" \
-  -d '{"model":"claude-haiku-4-5-20251001","max_tokens":1,"messages":[{"role":"user","content":"hi"}]}' \
-  "https://api.anthropic.com/v1/messages" 2>/dev/null || echo "000")
-
-if [ "$http_code" = "000" ]; then
-  fail "Could not reach api.anthropic.com. Check your internet connection."
-elif [ "$http_code" = "401" ]; then
-  fail "Invalid API key. Please check and try again."
-elif [ "$http_code" != "200" ]; then
-  warn "API returned HTTP ${http_code} — continuing anyway."
+  if [ "$http_code" = "000" ]; then
+    warn "Could not reach api.anthropic.com. Saving key anyway."
+  elif [ "$http_code" = "401" ]; then
+    warn "API key may be invalid. Saving anyway — you can update it later in ~/.membrain/.env"
+  elif [ "$http_code" = "200" ]; then
+    info "API key verified"
+  else
+    warn "API returned HTTP ${http_code} — continuing anyway."
+  fi
+else
+  warn "No API key provided. Add one later to ~/.membrain/.env"
 fi
-info "API key verified"
 
 # ─── Clone & Configure ───────────────────────────────────
 
@@ -196,7 +196,7 @@ cp "${MEMBRAIN_HOME}/engine/deploy/Caddyfile" "${MEMBRAIN_HOME}/Caddyfile"
 
 # Write .env
 cat > "${MEMBRAIN_HOME}/.env" <<ENVEOF
-ANTHROPIC_API_KEY=${api_key}
+ANTHROPIC_API_KEY=${api_key:-}
 DATABASE_URL=postgresql+asyncpg://membrain:membrain@postgres:5432/membrain
 REDIS_URL=redis://redis:6379
 ENVEOF
