@@ -2,7 +2,7 @@
 
 **The cognitive layer for AI.**
 
-GPT and Claude are just the creative cortex. A real brain needs memory, judgment, threat detection, routing, and recall. MemBrain provides the cognitive functions LLMs lack — as one integrated system, not bolted-on plugins.
+LLMs generate language. But a real brain also needs memory, judgment, threat detection, routing, and recall. MemBrain provides these cognitive functions as one integrated system — not bolted-on plugins.
 
 ## Install (macOS)
 
