@@ -223,6 +223,84 @@ rdr-anchor "membrain"' /etc/pf.conf
   echo -e " ${YELLOW}timeout — check 'membrain logs'${NC}"
 }
 
+cmd_diagnose() {
+  echo "Membrain Diagnostics"
+  echo "===================="
+  echo ""
+
+  # DNS check
+  resolved=$(dscacheutil -q host -a name api.anthropic.com 2>/dev/null | grep "ip_address" | head -1 | awk '{print $2}')
+  if [ "$resolved" = "127.0.0.1" ]; then
+    echo -e "  DNS:          ${GREEN}api.anthropic.com → 127.0.0.1${NC}"
+  else
+    echo -e "  DNS:          ${RED}api.anthropic.com → ${resolved:-unknown} (should be 127.0.0.1)${NC}"
+  fi
+
+  # IPv6 check
+  resolved6=$(dscacheutil -q host -a name api.anthropic.com 2>/dev/null | grep "ipv6_address" | head -1 | awk '{print $2}')
+  if [ "$resolved6" = "::1" ]; then
+    echo -e "  DNS (IPv6):   ${GREEN}api.anthropic.com → ::1${NC}"
+  elif [ -n "$resolved6" ]; then
+    echo -e "  DNS (IPv6):   ${RED}api.anthropic.com → ${resolved6} (should be ::1)${NC}"
+  fi
+
+  # pf check
+  pf_rule=$(sudo pfctl -s rules 2>/dev/null | grep 8443)
+  if [ -n "$pf_rule" ]; then
+    echo -e "  Port forward: ${GREEN}443 → 8443 active${NC}"
+  else
+    echo -e "  Port forward: ${RED}not active${NC}"
+  fi
+
+  # Caddy check
+  if lsof -i :8443 -sTCP:LISTEN &>/dev/null 2>&1; then
+    echo -e "  Caddy (8443): ${GREEN}listening${NC}"
+  else
+    echo -e "  Caddy (8443): ${RED}not listening${NC}"
+  fi
+
+  # Gateway check
+  if curl -sf http://localhost:8001/health >/dev/null 2>&1; then
+    echo -e "  Gateway:      ${GREEN}healthy${NC}"
+  else
+    echo -e "  Gateway:      ${RED}not responding${NC}"
+  fi
+
+  # TLS test
+  tls_ok=$(curl -sf --max-time 3 https://api.anthropic.com/health 2>/dev/null && echo "yes" || echo "no")
+  if [ "$tls_ok" = "yes" ]; then
+    echo -e "  TLS chain:    ${GREEN}working${NC}"
+  else
+    echo -e "  TLS chain:    ${YELLOW}not verified (may still work)${NC}"
+  fi
+
+  # Claude Desktop connections
+  echo ""
+  echo "  Claude Desktop connections:"
+  claude_conns=$(lsof -i -n -P 2>/dev/null | grep Claude | grep ESTABLISHED | awk '{print $9}' | cut -d'>' -f2 | cut -d':' -f1 | sort -u)
+  if [ -z "$claude_conns" ]; then
+    echo -e "    ${YELLOW}Claude Desktop not running or no connections${NC}"
+  else
+    for ip in $claude_conns; do
+      hostname=$(host "$ip" 2>/dev/null | grep "domain name pointer" | awk '{print $NF}' | sed 's/\.$//')
+      if [ -n "$hostname" ]; then
+        if [ "$ip" = "127.0.0.1" ]; then
+          echo -e "    ${GREEN}${ip} → ${hostname} (Membrain)${NC}"
+        else
+          echo -e "    ${YELLOW}${ip} → ${hostname}${NC}"
+        fi
+      else
+        if [ "$ip" = "127.0.0.1" ]; then
+          echo -e "    ${GREEN}${ip} (Membrain)${NC}"
+        else
+          echo -e "    ${YELLOW}${ip} (unknown)${NC}"
+        fi
+      fi
+    done
+  fi
+  echo ""
+}
+
 cmd_help() {
   echo "Usage: membrain <command>"
   echo ""
@@ -231,6 +309,7 @@ cmd_help() {
   echo "  logs        Stream gateway logs (Ctrl+C to stop)"
   echo "  start       Start Membrain and enable DNS routing"
   echo "  stop        Stop Membrain and disable DNS routing"
+  echo "  diagnose    Show DNS, TLS, and connection diagnostics"
   echo "  repair      Fix DNS, certificates, and port forwarding"
   echo "  update      Pull latest version and restart"
   echo "  uninstall   Remove Membrain completely"
@@ -244,6 +323,7 @@ case "${1:-help}" in
   logs)      shift; cmd_logs "$@" ;;
   stop)      cmd_stop ;;
   start)     cmd_start ;;
+  diagnose)  cmd_diagnose ;;
   repair)    cmd_repair ;;
   update)    cmd_update ;;
   uninstall) cmd_uninstall ;;
