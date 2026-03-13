@@ -166,6 +166,54 @@ cmd_uninstall() {
   echo -e "${GREEN}Membrain uninstalled. Your system is restored.${NC}"
 }
 
+cmd_repair() {
+  check_installed
+  echo "Repairing Membrain..."
+
+  # Fix /etc/hosts
+  sudo sed -i '' '/api.anthropic.com/d' /etc/hosts 2>/dev/null || true
+  echo "$HOSTS_ENTRY" | sudo tee -a /etc/hosts >/dev/null
+  echo -e "  ${GREEN}✓${NC} DNS routing"
+
+  # Fix pf anchor
+  echo "rdr pass on lo0 proto tcp from any to 127.0.0.1 port 443 -> 127.0.0.1 port 8443" \
+    | sudo tee /etc/pf.anchors/membrain >/dev/null
+  sudo sed -i '' '/membrain/d' /etc/pf.conf 2>/dev/null || true
+  sudo sed -i '' '/rdr-anchor "com.apple\/\*"/a\
+rdr-anchor "membrain"' /etc/pf.conf
+  echo 'load anchor "membrain" from "/etc/pf.anchors/membrain"' | sudo tee -a /etc/pf.conf >/dev/null
+  sudo pfctl -f /etc/pf.conf 2>/dev/null || true
+  sudo pfctl -e 2>/dev/null || true
+  echo -e "  ${GREEN}✓${NC} Port forwarding (443 → 8443)"
+
+  # Re-trust CA cert
+  if [ -f "${MEMBRAIN_HOME}/certs/membrain-ca.pem" ]; then
+    sudo security add-trusted-cert -d -r trustRoot \
+      -k /Library/Keychains/System.keychain \
+      "${MEMBRAIN_HOME}/certs/membrain-ca.pem" 2>/dev/null || true
+    echo -e "  ${GREEN}✓${NC} CA certificate"
+  fi
+
+  # Pull latest image and restart
+  docker compose -f "$COMPOSE_FILE" pull gateway 2>/dev/null
+  docker compose -f "$COMPOSE_FILE" up -d
+  echo -e "  ${GREEN}✓${NC} Services restarted"
+
+  # Health check
+  echo -n "  Waiting for gateway"
+  for i in $(seq 1 15); do
+    if curl -sf http://localhost:8001/health >/dev/null 2>&1; then
+      echo -e " ${GREEN}ready${NC}"
+      echo ""
+      echo -e "${GREEN}Repair complete.${NC}"
+      return
+    fi
+    echo -n "."
+    sleep 2
+  done
+  echo -e " ${YELLOW}timeout — check 'membrain logs'${NC}"
+}
+
 cmd_help() {
   echo "Usage: membrain <command>"
   echo ""
@@ -174,6 +222,7 @@ cmd_help() {
   echo "  logs        Stream gateway logs (Ctrl+C to stop)"
   echo "  start       Start Membrain and enable DNS routing"
   echo "  stop        Stop Membrain and disable DNS routing"
+  echo "  repair      Fix DNS, certificates, and port forwarding"
   echo "  update      Pull latest version and restart"
   echo "  uninstall   Remove Membrain completely"
   echo "  help        Show this help message"
@@ -186,6 +235,7 @@ case "${1:-help}" in
   logs)      shift; cmd_logs "$@" ;;
   stop)      cmd_stop ;;
   start)     cmd_start ;;
+  repair)    cmd_repair ;;
   update)    cmd_update ;;
   uninstall) cmd_uninstall ;;
   help|*)    cmd_help ;;
