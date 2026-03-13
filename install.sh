@@ -228,7 +228,7 @@ distinguished_name = req_dn
 [req_dn]
 [v3_leaf]
 basicConstraints = CA:FALSE
-subjectAltName = DNS:api.anthropic.com
+subjectAltName = DNS:api.anthropic.com,DNS:claude.ai
 keyUsage = digitalSignature, keyEncipherment
 extendedKeyUsage = serverAuth
 SANEOF
@@ -284,6 +284,8 @@ info "CA certificate trusted"
 if ! grep -q "# membrain" /etc/hosts 2>/dev/null; then
   echo "127.0.0.1 api.anthropic.com  # membrain" | sudo tee -a /etc/hosts >/dev/null
   echo "::1 api.anthropic.com  # membrain" | sudo tee -a /etc/hosts >/dev/null
+  echo "127.0.0.1 claude.ai  # membrain" | sudo tee -a /etc/hosts >/dev/null
+  echo "::1 claude.ai  # membrain" | sudo tee -a /etc/hosts >/dev/null
 fi
 sudo dscacheutil -flushcache 2>/dev/null || true
 sudo killall -HUP mDNSResponder 2>/dev/null || true
