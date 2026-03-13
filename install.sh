@@ -291,7 +291,9 @@ info "DNS routing configured"
 echo "rdr pass on lo0 proto tcp from any to 127.0.0.1 port 443 -> 127.0.0.1 port 8443" \
   | sudo tee /etc/pf.anchors/membrain >/dev/null
 if ! grep -q "membrain" /etc/pf.conf 2>/dev/null; then
-  echo "rdr-anchor \"membrain\"" | sudo tee -a /etc/pf.conf >/dev/null
+  # rdr-anchor must be placed with other rdr-anchors (before filter rules)
+  sudo sed -i '' '/rdr-anchor "com.apple\/\*"/a\
+rdr-anchor "membrain"' /etc/pf.conf
   echo "load anchor \"membrain\" from \"/etc/pf.anchors/membrain\"" | sudo tee -a /etc/pf.conf >/dev/null
 fi
 sudo pfctl -f /etc/pf.conf 2>/dev/null || true
