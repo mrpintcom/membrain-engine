@@ -280,10 +280,13 @@ sudo security add-trusted-cert -d -r trustRoot \
   "${MEMBRAIN_HOME}/certs/membrain-ca.pem"
 info "CA certificate trusted"
 
-# Add /etc/hosts entry
+# Add /etc/hosts entries (IPv4 + IPv6 to prevent bypass)
 if ! grep -q "# membrain" /etc/hosts 2>/dev/null; then
   echo "127.0.0.1 api.anthropic.com  # membrain" | sudo tee -a /etc/hosts >/dev/null
+  echo "::1 api.anthropic.com  # membrain" | sudo tee -a /etc/hosts >/dev/null
 fi
+sudo dscacheutil -flushcache 2>/dev/null || true
+sudo killall -HUP mDNSResponder 2>/dev/null || true
 info "DNS routing configured"
 
 # Set up pf to redirect 443 → 8443 on loopback

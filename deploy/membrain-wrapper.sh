@@ -21,6 +21,9 @@ check_installed() {
 add_hosts_entry() {
   if ! grep -q "$HOSTS_TAG" /etc/hosts 2>/dev/null; then
     echo "$HOSTS_ENTRY" | sudo tee -a /etc/hosts >/dev/null
+    echo "::1 api.anthropic.com  ${HOSTS_TAG}" | sudo tee -a /etc/hosts >/dev/null
+    sudo dscacheutil -flushcache 2>/dev/null || true
+    sudo killall -HUP mDNSResponder 2>/dev/null || true
     echo -e "${GREEN}DNS routing enabled${NC}"
   fi
 }
@@ -170,9 +173,12 @@ cmd_repair() {
   check_installed
   echo "Repairing Membrain..."
 
-  # Fix /etc/hosts
+  # Fix /etc/hosts (IPv4 + IPv6)
   sudo sed -i '' '/api.anthropic.com/d' /etc/hosts 2>/dev/null || true
   echo "$HOSTS_ENTRY" | sudo tee -a /etc/hosts >/dev/null
+  echo "::1 api.anthropic.com  ${HOSTS_TAG}" | sudo tee -a /etc/hosts >/dev/null
+  sudo dscacheutil -flushcache 2>/dev/null || true
+  sudo killall -HUP mDNSResponder 2>/dev/null || true
   echo -e "  ${GREEN}✓${NC} DNS routing"
 
   # Fix pf anchor
