@@ -301,6 +301,64 @@ cmd_diagnose() {
   echo ""
 }
 
+cmd_enable() {
+  check_installed
+  local component="${1:-}"
+  case "$component" in
+    knowledge)
+      echo "Enabling knowledge graph (embedder sidecar)..."
+      # Set embedding backend to remote in .env
+      if grep -q "^EMBEDDING_BACKEND=" "${MEMBRAIN_HOME}/.env" 2>/dev/null; then
+        sed -i '' 's/^EMBEDDING_BACKEND=.*/EMBEDDING_BACKEND=remote/' "${MEMBRAIN_HOME}/.env"
+      else
+        echo "EMBEDDING_BACKEND=remote" >> "${MEMBRAIN_HOME}/.env"
+      fi
+      # Build and start embedder
+      docker compose -f "$COMPOSE_FILE" --profile knowledge build embedder
+      docker compose -f "$COMPOSE_FILE" --profile knowledge up -d
+      # Wait for embedder health
+      echo -n "Waiting for embedder"
+      for i in $(seq 1 30); do
+        if docker compose -f "$COMPOSE_FILE" exec embedder python -c "import urllib.request; urllib.request.urlopen('http://localhost:8002/health')" 2>/dev/null; then
+          echo -e " ${GREEN}ready${NC}"
+          echo -e "${GREEN}Knowledge graph enabled.${NC}"
+          return
+        fi
+        echo -n "."
+        sleep 3
+      done
+      echo -e " ${YELLOW}timeout — check 'membrain logs'${NC}"
+      ;;
+    *)
+      echo "Usage: membrain enable <component>"
+      echo ""
+      echo "Components:"
+      echo "  knowledge   Enable knowledge graph (semantic search, auto-extraction)"
+      ;;
+  esac
+}
+
+cmd_disable() {
+  check_installed
+  local component="${1:-}"
+  case "$component" in
+    knowledge)
+      echo "Disabling knowledge graph..."
+      docker compose -f "$COMPOSE_FILE" stop embedder 2>/dev/null || true
+      docker compose -f "$COMPOSE_FILE" rm -f embedder 2>/dev/null || true
+      sed -i '' 's/^EMBEDDING_BACKEND=.*/EMBEDDING_BACKEND=/' "${MEMBRAIN_HOME}/.env" 2>/dev/null || true
+      docker compose -f "$COMPOSE_FILE" up -d --force-recreate gateway
+      echo -e "${GREEN}Knowledge graph disabled.${NC}"
+      ;;
+    *)
+      echo "Usage: membrain disable <component>"
+      echo ""
+      echo "Components:"
+      echo "  knowledge   Disable knowledge graph"
+      ;;
+  esac
+}
+
 cmd_help() {
   echo "Usage: membrain <command>"
   echo ""
@@ -309,6 +367,8 @@ cmd_help() {
   echo "  logs        Stream gateway logs (Ctrl+C to stop)"
   echo "  start       Start Membrain and enable DNS routing"
   echo "  stop        Stop Membrain and disable DNS routing"
+  echo "  enable      Enable optional components (e.g. knowledge)"
+  echo "  disable     Disable optional components"
   echo "  diagnose    Show DNS, TLS, and connection diagnostics"
   echo "  repair      Fix DNS, certificates, and port forwarding"
   echo "  update      Pull latest version and restart"
@@ -323,6 +383,8 @@ case "${1:-help}" in
   logs)      shift; cmd_logs "$@" ;;
   stop)      cmd_stop ;;
   start)     cmd_start ;;
+  enable)    shift; cmd_enable "$@" ;;
+  disable)   shift; cmd_disable "$@" ;;
   diagnose)  cmd_diagnose ;;
   repair)    cmd_repair ;;
   update)    cmd_update ;;
