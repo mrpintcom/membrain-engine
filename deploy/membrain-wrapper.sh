@@ -117,7 +117,10 @@ cmd_update() {
   cp "${MEMBRAIN_HOME}/engine/deploy/docker-compose.yml" "${MEMBRAIN_HOME}/docker-compose.yml"
   cp "${MEMBRAIN_HOME}/engine/deploy/Caddyfile" "${MEMBRAIN_HOME}/Caddyfile"
   docker compose -f "$COMPOSE_FILE" pull gateway
-  docker compose -f "$COMPOSE_FILE" up -d gateway
+  docker compose -f "$COMPOSE_FILE" up -d --force-recreate gateway
+  # Update CLI wrapper
+  sudo cp "${MEMBRAIN_HOME}/engine/deploy/membrain-wrapper.sh" /usr/local/bin/membrain
+  sudo chmod +x /usr/local/bin/membrain
   echo -e "${GREEN}Updated and restarted.${NC}"
 }
 
@@ -200,9 +203,9 @@ rdr-anchor "membrain"' /etc/pf.conf
     echo -e "  ${GREEN}✓${NC} CA certificate"
   fi
 
-  # Pull latest image and restart
+  # Pull latest image and force restart
   docker compose -f "$COMPOSE_FILE" pull gateway 2>/dev/null
-  docker compose -f "$COMPOSE_FILE" up -d
+  docker compose -f "$COMPOSE_FILE" up -d --force-recreate
   echo -e "  ${GREEN}✓${NC} Services restarted"
 
   # Health check
