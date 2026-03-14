@@ -226,25 +226,6 @@ cmd_enable() {
       echo -e " ${YELLOW}still starting (model download may take a few minutes)${NC}"
       info "ML Search enabled. Run 'membrain logs embedder' to check progress."
       ;;
-    ml-ner)
-      step "Enabling ML NER (named entity recognition)..."
-      profiles_add "ml-ner"
-      env_set "PII_NER_URL" "http://ner:8003"
-      docker compose -f "$COMPOSE_FILE" up -d ner
-      echo -n "  Waiting for NER"
-      for i in $(seq 1 30); do
-        if docker compose -f "$COMPOSE_FILE" exec -T ner curl -sf http://localhost:8003/health >/dev/null 2>&1; then
-          echo -e " ${GREEN}ready${NC}"
-          docker compose -f "$COMPOSE_FILE" restart gateway
-          info "ML NER enabled. Gateway restarted."
-          return
-        fi
-        echo -n "."
-        sleep 3
-      done
-      echo -e " ${YELLOW}still starting (model download may take a few minutes)${NC}"
-      info "ML NER enabled. Run 'membrain logs ner' to check progress."
-      ;;
     litellm)
       step "Enabling LiteLLM (100+ model backends)..."
       env_set "LITELLM" "true"
@@ -256,7 +237,6 @@ cmd_enable() {
       echo ""
       echo "Available add-ons:"
       echo "  ml-search   Semantic knowledge search (sentence-transformers)"
-      echo "  ml-ner      ML-based PII detection (BERT NER)"
       echo "  litellm     100+ LLM backends via LiteLLM"
       exit 1
       ;;
@@ -274,14 +254,6 @@ cmd_disable() {
       docker compose -f "$COMPOSE_FILE" stop embedder 2>/dev/null || true
       docker compose -f "$COMPOSE_FILE" restart gateway
       info "ML Search disabled. Falling back to text search."
-      ;;
-    ml-ner)
-      step "Disabling ML NER..."
-      profiles_remove "ml-ner"
-      env_remove "PII_NER_URL"
-      docker compose -f "$COMPOSE_FILE" stop ner 2>/dev/null || true
-      docker compose -f "$COMPOSE_FILE" restart gateway
-      info "ML NER disabled. Using regex PII detection only."
       ;;
     litellm)
       step "Disabling LiteLLM..."
@@ -308,13 +280,6 @@ cmd_addons() {
     echo -e "  ml-search   ${GREEN}enabled${NC}   Semantic knowledge search"
   else
     echo -e "  ml-search   ${YELLOW}disabled${NC}  Semantic knowledge search"
-  fi
-
-  # ml-ner
-  if profiles_has "ml-ner"; then
-    echo -e "  ml-ner      ${GREEN}enabled${NC}   ML-based PII detection (BERT NER)"
-  else
-    echo -e "  ml-ner      ${YELLOW}disabled${NC}  ML-based PII detection (BERT NER)"
   fi
 
   # litellm
