@@ -1,6 +1,6 @@
 services:
   gateway:
-    image: ghcr.io/mrpintcom/membrain:0.2.9
+    image: ghcr.io/mrpintcom/membrain:0.3.0
     ports:
       - "8001:8000"
     env_file: .env
@@ -46,14 +46,14 @@ services:
 
   embedder:
     build: ./embedder
-    profiles:
-      - knowledge
+    profiles: ["ml-search"]
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8002/health')"]
       interval: 10s
       timeout: 5s
       retries: 3
+      start_period: 30s
 
 volumes:
   pgdata:

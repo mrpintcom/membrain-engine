@@ -30,11 +30,6 @@ cleanup_on_failure() {
   if grep -q "# membrain" /etc/hosts 2>/dev/null; then
     sudo sed -i '' '/# membrain/d' /etc/hosts 2>/dev/null || true
   fi
-  if [ -f /etc/pf.anchors/membrain ]; then
-    sudo rm -f /etc/pf.anchors/membrain 2>/dev/null || true
-    sudo sed -i '' '/membrain/d' /etc/pf.conf 2>/dev/null || true
-    sudo pfctl -f /etc/pf.conf 2>/dev/null || true
-  fi
   if [ -f "${MEMBRAIN_HOME}/certs/membrain-ca.pem" ]; then
     sudo security remove-trusted-cert -d "${MEMBRAIN_HOME}/certs/membrain-ca.pem" 2>/dev/null || true
   fi
@@ -74,7 +69,7 @@ info "macOS ${macos_version}"
 if command -v brew &>/dev/null; then
   # Fix permissions if needed (common on Intel Macs)
   brew_prefix=$(brew --prefix 2>/dev/null || echo "/usr/local")
-  if [ ! -w "${brew_prefix}/Homebrew" ] 2>/dev/null; then
+  if [ -d "${brew_prefix}/Homebrew" ] && [ ! -w "${brew_prefix}/Homebrew" ]; then
     step "Fixing Homebrew permissions..."
     sudo chown -R "$(whoami)" "${brew_prefix}/Homebrew"
   fi
@@ -138,41 +133,47 @@ if ! docker info &>/dev/null 2>&1; then
   fi
 fi
 
-# Check ports (8443 for Caddy TLS, 8001 for dashboard)
-for check_port in 8443 8001; do
-  if lsof -i ":${check_port}" -sTCP:LISTEN &>/dev/null 2>&1; then
-    port_user=$(lsof -i ":${check_port}" -sTCP:LISTEN 2>/dev/null | tail -1 | awk '{print $1}')
-    fail "Port ${check_port} is in use by '${port_user}'. Please stop it and re-run."
+# Check ports
+if lsof -i :443 -sTCP:LISTEN &>/dev/null 2>&1; then
+  port_user=$(lsof -i :443 -sTCP:LISTEN 2>/dev/null | tail -1 | awk '{print $1}')
+  if [ "$port_user" = "com.docke" ] || [ "$port_user" = "docker" ] || [ "$port_user" = "vpnkit" ]; then
+    warn "Docker is using port 443 — will be released when we start our stack."
+  else
+    fail "Port 443 is in use by '${port_user}'. Please stop it and re-run."
   fi
-done
+fi
+if lsof -i :8001 -sTCP:LISTEN &>/dev/null 2>&1; then
+  port_user=$(lsof -i :8001 -sTCP:LISTEN 2>/dev/null | tail -1 | awk '{print $1}')
+  fail "Port 8001 is in use by '${port_user}'. Please stop it and re-run."
+fi
 
-# ─── API Key (optional) ───────────────────────────────────
+# ─── API Key ──────────────────────────────────────────────
 
 echo ""
-echo -n "  Enter your Anthropic API key (or press Enter to skip): "
+echo -n "  Enter your Anthropic API key: "
 read -r api_key </dev/tty
 
-if [ -n "$api_key" ]; then
-  step "Verifying API key..."
-  http_code=$(curl -s -o /dev/null -w "%{http_code}" \
-    -H "x-api-key: ${api_key}" \
-    -H "content-type: application/json" \
-    -H "anthropic-version: 2023-06-01" \
-    -d '{"model":"claude-haiku-4-5-20251001","max_tokens":1,"messages":[{"role":"user","content":"hi"}]}' \
-    "https://api.anthropic.com/v1/messages" 2>/dev/null || echo "000")
-
-  if [ "$http_code" = "000" ]; then
-    warn "Could not reach api.anthropic.com. Saving key anyway."
-  elif [ "$http_code" = "401" ]; then
-    warn "API key may be invalid. Saving anyway — you can update it later in ~/.membrain/.env"
-  elif [ "$http_code" = "200" ]; then
-    info "API key verified"
-  else
-    warn "API returned HTTP ${http_code} — continuing anyway."
-  fi
-else
-  warn "No API key provided. Add one later to ~/.membrain/.env"
+if [ -z "$api_key" ]; then
+  fail "API key is required."
 fi
+
+# Validate key
+step "Verifying API key..."
+http_code=$(curl -s -o /dev/null -w "%{http_code}" \
+  -H "x-api-key: ${api_key}" \
+  -H "content-type: application/json" \
+  -H "anthropic-version: 2023-06-01" \
+  -d '{"model":"claude-haiku-4-5-20251001","max_tokens":1,"messages":[{"role":"user","content":"hi"}]}' \
+  "https://api.anthropic.com/v1/messages" 2>/dev/null || echo "000")
+
+if [ "$http_code" = "000" ]; then
+  fail "Could not reach api.anthropic.com. Check your internet connection."
+elif [ "$http_code" = "401" ]; then
+  fail "Invalid API key. Please check and try again."
+elif [ "$http_code" != "200" ]; then
+  warn "API returned HTTP ${http_code} — continuing anyway."
+fi
+info "API key verified"
 
 # ─── Clone & Configure ───────────────────────────────────
 
@@ -182,21 +183,21 @@ echo "  Setting up Membrain..."
 mkdir -p "$MEMBRAIN_HOME"
 
 step "Downloading Membrain..."
-git clone --depth 1 --quiet "$REPO_URL" "${MEMBRAIN_HOME}/engine"
+git clone --depth 1 --quiet "$REPO_URL" "${MEMBRAIN_HOME}/src"
 
 # Validate clone
-if [ ! -f "${MEMBRAIN_HOME}/engine/deploy/docker-compose.yml" ]; then
-  fail "docker-compose.yml not found in cloned repo. Clone may be corrupted."
+if [ ! -f "${MEMBRAIN_HOME}/src/Dockerfile" ]; then
+  fail "Dockerfile not found in cloned repo. Clone may be corrupted."
 fi
 info "Downloaded Membrain"
 
-# Copy configs
-cp "${MEMBRAIN_HOME}/engine/deploy/docker-compose.yml" "${MEMBRAIN_HOME}/docker-compose.yml"
-cp "${MEMBRAIN_HOME}/engine/deploy/Caddyfile" "${MEMBRAIN_HOME}/Caddyfile"
+# Copy installer configs
+cp "${MEMBRAIN_HOME}/src/deploy/installer/docker-compose.yml" "${MEMBRAIN_HOME}/docker-compose.yml"
+cp "${MEMBRAIN_HOME}/src/deploy/installer/Caddyfile" "${MEMBRAIN_HOME}/Caddyfile"
 
 # Write .env
 cat > "${MEMBRAIN_HOME}/.env" <<ENVEOF
-ANTHROPIC_API_KEY=${api_key:-}
+ANTHROPIC_API_KEY=${api_key}
 DATABASE_URL=postgresql+asyncpg://membrain:membrain@postgres:5432/membrain
 REDIS_URL=redis://redis:6379
 ENVEOF
@@ -228,7 +229,7 @@ distinguished_name = req_dn
 [req_dn]
 [v3_leaf]
 basicConstraints = CA:FALSE
-subjectAltName = DNS:api.anthropic.com,DNS:claude.ai
+subjectAltName = DNS:api.anthropic.com
 keyUsage = digitalSignature, keyEncipherment
 extendedKeyUsage = serverAuth
 SANEOF
@@ -257,14 +258,10 @@ chmod 600 "${MEMBRAIN_HOME}/certs/api.anthropic.com-key.pem"
 
 info "Generated TLS certificates"
 
-# ─── Pull & Start Services ───────────────────────────────
-
-step "Pulling Membrain image..."
-docker compose -f "${MEMBRAIN_HOME}/docker-compose.yml" pull gateway
-info "Image downloaded"
+# ─── Start Services ──────────────────────────────────────
 
 step "Starting services..."
-docker compose -f "${MEMBRAIN_HOME}/docker-compose.yml" up -d
+docker compose -f "${MEMBRAIN_HOME}/docker-compose.yml" up -d --build
 info "Started services (gateway, caddy, postgres, redis)"
 
 # ─── TLS Proxy Setup (sudo) ──────────────────────────────
@@ -280,30 +277,11 @@ sudo security add-trusted-cert -d -r trustRoot \
   "${MEMBRAIN_HOME}/certs/membrain-ca.pem"
 info "CA certificate trusted"
 
-# Add /etc/hosts entries (IPv4 + IPv6 to prevent bypass)
+# Add /etc/hosts entry
 if ! grep -q "# membrain" /etc/hosts 2>/dev/null; then
   echo "127.0.0.1 api.anthropic.com  # membrain" | sudo tee -a /etc/hosts >/dev/null
-  echo "::1 api.anthropic.com  # membrain" | sudo tee -a /etc/hosts >/dev/null
-  echo "127.0.0.1 claude.ai  # membrain" | sudo tee -a /etc/hosts >/dev/null
-  echo "::1 claude.ai  # membrain" | sudo tee -a /etc/hosts >/dev/null
 fi
-sudo dscacheutil -flushcache 2>/dev/null || true
-sudo killall -HUP mDNSResponder 2>/dev/null || true
 info "DNS routing configured"
-
-# Set up pf to redirect 443 → 8443 on loopback
-# (port 443 is reserved by macOS system services)
-echo "rdr pass on lo0 proto tcp from any to 127.0.0.1 port 443 -> 127.0.0.1 port 8443" \
-  | sudo tee /etc/pf.anchors/membrain >/dev/null
-if ! grep -q "membrain" /etc/pf.conf 2>/dev/null; then
-  # rdr-anchor must be placed with other rdr-anchors (before filter rules)
-  sudo sed -i '' '/rdr-anchor "com.apple\/\*"/a\
-rdr-anchor "membrain"' /etc/pf.conf
-  echo "load anchor \"membrain\" from \"/etc/pf.anchors/membrain\"" | sudo tee -a /etc/pf.conf >/dev/null
-fi
-sudo pfctl -f /etc/pf.conf 2>/dev/null || true
-sudo pfctl -e 2>/dev/null || true
-info "Port forwarding configured (443 → 8443)"
 
 # ─── Health Check ─────────────────────────────────────────
 
@@ -328,14 +306,14 @@ fi
 
 # ─── Install CLI Wrapper ─────────────────────────────────
 
-sudo cp "${MEMBRAIN_HOME}/engine/deploy/membrain-wrapper.sh" /usr/local/bin/membrain
+sudo cp "${MEMBRAIN_HOME}/src/deploy/installer/membrain-wrapper.sh" /usr/local/bin/membrain
 sudo chmod +x /usr/local/bin/membrain
 info "Installed 'membrain' command"
 
 # ─── Auto-Start ──────────────────────────────────────────
 
 mkdir -p "${HOME}/Library/LaunchAgents"
-cp "${MEMBRAIN_HOME}/engine/deploy/com.membrain.docker.plist" \
+cp "${MEMBRAIN_HOME}/src/deploy/installer/com.membrain.docker.plist" \
    "${HOME}/Library/LaunchAgents/com.membrain.docker.plist"
 launchctl load "${HOME}/Library/LaunchAgents/com.membrain.docker.plist" 2>/dev/null || true
 info "Auto-start configured"
@@ -359,5 +337,11 @@ echo "    membrain logs      - view logs"
 echo "    membrain stop      - pause Membrain"
 echo "    membrain start     - resume"
 echo "    membrain update    - pull latest version"
+echo "    membrain addons    - list optional add-ons"
 echo "    membrain uninstall - clean removal"
+echo ""
+echo "  Optional add-ons (enable anytime):"
+echo "    membrain enable ml-search   - semantic knowledge search"
+echo "    membrain enable ml-ner      - ML-based PII detection"
+echo "    membrain enable litellm     - 100+ LLM backends"
 echo ""

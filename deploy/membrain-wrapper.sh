@@ -21,9 +21,6 @@ check_installed() {
 add_hosts_entry() {
   if ! grep -q "$HOSTS_TAG" /etc/hosts 2>/dev/null; then
     echo "$HOSTS_ENTRY" | sudo tee -a /etc/hosts >/dev/null
-    echo "::1 api.anthropic.com  ${HOSTS_TAG}" | sudo tee -a /etc/hosts >/dev/null
-    sudo dscacheutil -flushcache 2>/dev/null || true
-    sudo killall -HUP mDNSResponder 2>/dev/null || true
     echo -e "${GREEN}DNS routing enabled${NC}"
   fi
 }
@@ -35,21 +32,63 @@ remove_hosts_entry() {
   fi
 }
 
-enable_pf() {
-  if [ -f /etc/pf.anchors/membrain ]; then
-    sudo pfctl -f /etc/pf.conf 2>/dev/null || true
-    sudo pfctl -e 2>/dev/null || true
+# ─── .env helpers ────────────────────────────────────────
+
+ENV_FILE="${MEMBRAIN_HOME}/.env"
+
+env_get() {
+  # Get value of a key from .env (empty string if not found)
+  grep -E "^${1}=" "$ENV_FILE" 2>/dev/null | head -1 | cut -d= -f2-
+}
+
+env_set() {
+  # Set key=value in .env (creates or updates)
+  if grep -qE "^${1}=" "$ENV_FILE" 2>/dev/null; then
+    sed -i '' "s|^${1}=.*|${1}=${2}|" "$ENV_FILE"
+  else
+    echo "${1}=${2}" >> "$ENV_FILE"
   fi
 }
 
-disable_pf() {
-  if [ -f /etc/pf.anchors/membrain ]; then
-    sudo rm -f /etc/pf.anchors/membrain
-    sudo sed -i '' '/membrain/d' /etc/pf.conf 2>/dev/null || true
-    sudo pfctl -f /etc/pf.conf 2>/dev/null || true
-    echo -e "${YELLOW}Port forwarding removed${NC}"
+env_remove() {
+  # Remove a key from .env
+  sed -i '' "/^${1}=/d" "$ENV_FILE" 2>/dev/null || true
+}
+
+profiles_add() {
+  # Add a profile to COMPOSE_PROFILES (comma-separated)
+  local current
+  current=$(env_get "COMPOSE_PROFILES")
+  if [ -z "$current" ]; then
+    env_set "COMPOSE_PROFILES" "$1"
+  elif ! echo ",$current," | grep -q ",$1,"; then
+    env_set "COMPOSE_PROFILES" "${current},${1}"
   fi
 }
+
+profiles_remove() {
+  # Remove a profile from COMPOSE_PROFILES
+  local current
+  current=$(env_get "COMPOSE_PROFILES")
+  # Remove the profile, clean up commas
+  local updated
+  updated=$(echo "$current" | sed "s/${1}//" | sed 's/,,/,/g' | sed 's/^,//' | sed 's/,$//')
+  if [ -z "$updated" ]; then
+    env_remove "COMPOSE_PROFILES"
+  else
+    env_set "COMPOSE_PROFILES" "$updated"
+  fi
+}
+
+profiles_has() {
+  # Check if a profile is in COMPOSE_PROFILES
+  local current
+  current=$(env_get "COMPOSE_PROFILES")
+  echo ",$current," | grep -q ",$1,"
+}
+
+step() { echo -e "  $1"; }
+info() { echo -e "  ${GREEN}$1${NC}"; }
 
 cmd_status() {
   check_installed
@@ -95,7 +134,6 @@ cmd_start() {
   echo "Starting Membrain..."
   docker compose -f "$COMPOSE_FILE" start
   add_hosts_entry
-  enable_pf
 
   # Wait for health
   echo -n "Waiting for gateway"
@@ -113,14 +151,8 @@ cmd_start() {
 cmd_update() {
   check_installed
   echo "Updating Membrain..."
-  git -C "${MEMBRAIN_HOME}/engine" pull --ff-only
-  cp "${MEMBRAIN_HOME}/engine/deploy/docker-compose.yml" "${MEMBRAIN_HOME}/docker-compose.yml"
-  cp "${MEMBRAIN_HOME}/engine/deploy/Caddyfile" "${MEMBRAIN_HOME}/Caddyfile"
-  docker compose -f "$COMPOSE_FILE" pull gateway
-  docker compose -f "$COMPOSE_FILE" up -d --force-recreate gateway
-  # Update CLI wrapper
-  sudo cp "${MEMBRAIN_HOME}/engine/deploy/membrain-wrapper.sh" /usr/local/bin/membrain
-  sudo chmod +x /usr/local/bin/membrain
+  git -C "${MEMBRAIN_HOME}/src" pull --ff-only
+  docker compose -f "$COMPOSE_FILE" up -d --build gateway
   echo -e "${GREEN}Updated and restarted.${NC}"
 }
 
@@ -148,9 +180,8 @@ cmd_uninstall() {
   docker compose -f "$COMPOSE_FILE" down -v --rmi all 2>/dev/null || true
   echo "  Stopped and removed containers"
 
-  # 3. Remove /etc/hosts entry and pf rules
+  # 3. Remove /etc/hosts entry
   remove_hosts_entry
-  disable_pf
 
   # 4. Unload launchd plist
   local plist_path="${HOME}/Library/LaunchAgents/com.membrain.docker.plist"
@@ -172,191 +203,130 @@ cmd_uninstall() {
   echo -e "${GREEN}Membrain uninstalled. Your system is restored.${NC}"
 }
 
-cmd_repair() {
-  check_installed
-  echo "Repairing Membrain..."
-
-  # Fix /etc/hosts (IPv4 + IPv6)
-  sudo sed -i '' '/api.anthropic.com/d' /etc/hosts 2>/dev/null || true
-  echo "$HOSTS_ENTRY" | sudo tee -a /etc/hosts >/dev/null
-  echo "::1 api.anthropic.com  ${HOSTS_TAG}" | sudo tee -a /etc/hosts >/dev/null
-  sudo dscacheutil -flushcache 2>/dev/null || true
-  sudo killall -HUP mDNSResponder 2>/dev/null || true
-  echo -e "  ${GREEN}✓${NC} DNS routing"
-
-  # Fix pf anchor
-  echo "rdr pass on lo0 proto tcp from any to 127.0.0.1 port 443 -> 127.0.0.1 port 8443" \
-    | sudo tee /etc/pf.anchors/membrain >/dev/null
-  sudo sed -i '' '/membrain/d' /etc/pf.conf 2>/dev/null || true
-  sudo sed -i '' '/rdr-anchor "com.apple\/\*"/a\
-rdr-anchor "membrain"' /etc/pf.conf
-  echo 'load anchor "membrain" from "/etc/pf.anchors/membrain"' | sudo tee -a /etc/pf.conf >/dev/null
-  sudo pfctl -f /etc/pf.conf 2>/dev/null || true
-  sudo pfctl -e 2>/dev/null || true
-  echo -e "  ${GREEN}✓${NC} Port forwarding (443 → 8443)"
-
-  # Re-trust CA cert
-  if [ -f "${MEMBRAIN_HOME}/certs/membrain-ca.pem" ]; then
-    sudo security add-trusted-cert -d -r trustRoot \
-      -k /Library/Keychains/System.keychain \
-      "${MEMBRAIN_HOME}/certs/membrain-ca.pem" 2>/dev/null || true
-    echo -e "  ${GREEN}✓${NC} CA certificate"
-  fi
-
-  # Pull latest image and force restart
-  docker compose -f "$COMPOSE_FILE" pull gateway 2>/dev/null
-  docker compose -f "$COMPOSE_FILE" up -d --force-recreate
-  echo -e "  ${GREEN}✓${NC} Services restarted"
-
-  # Health check
-  echo -n "  Waiting for gateway"
-  for i in $(seq 1 15); do
-    if curl -sf http://localhost:8001/health >/dev/null 2>&1; then
-      echo -e " ${GREEN}ready${NC}"
-      echo ""
-      echo -e "${GREEN}Repair complete.${NC}"
-      return
-    fi
-    echo -n "."
-    sleep 2
-  done
-  echo -e " ${YELLOW}timeout — check 'membrain logs'${NC}"
-}
-
-cmd_diagnose() {
-  echo "Membrain Diagnostics"
-  echo "===================="
-  echo ""
-
-  # DNS check
-  resolved=$(dscacheutil -q host -a name api.anthropic.com 2>/dev/null | grep "ip_address" | head -1 | awk '{print $2}')
-  if [ "$resolved" = "127.0.0.1" ]; then
-    echo -e "  DNS:          ${GREEN}api.anthropic.com → 127.0.0.1${NC}"
-  else
-    echo -e "  DNS:          ${RED}api.anthropic.com → ${resolved:-unknown} (should be 127.0.0.1)${NC}"
-  fi
-
-  # IPv6 check
-  resolved6=$(dscacheutil -q host -a name api.anthropic.com 2>/dev/null | grep "ipv6_address" | head -1 | awk '{print $2}')
-  if [ "$resolved6" = "::1" ]; then
-    echo -e "  DNS (IPv6):   ${GREEN}api.anthropic.com → ::1${NC}"
-  elif [ -n "$resolved6" ]; then
-    echo -e "  DNS (IPv6):   ${RED}api.anthropic.com → ${resolved6} (should be ::1)${NC}"
-  fi
-
-  # pf check
-  pf_rule=$(sudo pfctl -s rules 2>/dev/null | grep 8443)
-  if [ -n "$pf_rule" ]; then
-    echo -e "  Port forward: ${GREEN}443 → 8443 active${NC}"
-  else
-    echo -e "  Port forward: ${RED}not active${NC}"
-  fi
-
-  # Caddy check
-  if lsof -i :8443 -sTCP:LISTEN &>/dev/null 2>&1; then
-    echo -e "  Caddy (8443): ${GREEN}listening${NC}"
-  else
-    echo -e "  Caddy (8443): ${RED}not listening${NC}"
-  fi
-
-  # Gateway check
-  if curl -sf http://localhost:8001/health >/dev/null 2>&1; then
-    echo -e "  Gateway:      ${GREEN}healthy${NC}"
-  else
-    echo -e "  Gateway:      ${RED}not responding${NC}"
-  fi
-
-  # TLS test
-  tls_ok=$(curl -sf --max-time 3 https://api.anthropic.com/health 2>/dev/null && echo "yes" || echo "no")
-  if [ "$tls_ok" = "yes" ]; then
-    echo -e "  TLS chain:    ${GREEN}working${NC}"
-  else
-    echo -e "  TLS chain:    ${YELLOW}not verified (may still work)${NC}"
-  fi
-
-  # Claude Desktop connections
-  echo ""
-  echo "  Claude Desktop connections:"
-  claude_conns=$(lsof -i -n -P 2>/dev/null | grep Claude | grep ESTABLISHED | awk '{print $9}' | cut -d'>' -f2 | cut -d':' -f1 | sort -u)
-  if [ -z "$claude_conns" ]; then
-    echo -e "    ${YELLOW}Claude Desktop not running or no connections${NC}"
-  else
-    for ip in $claude_conns; do
-      hostname=$(host "$ip" 2>/dev/null | grep "domain name pointer" | awk '{print $NF}' | sed 's/\.$//')
-      if [ -n "$hostname" ]; then
-        if [ "$ip" = "127.0.0.1" ]; then
-          echo -e "    ${GREEN}${ip} → ${hostname} (Membrain)${NC}"
-        else
-          echo -e "    ${YELLOW}${ip} → ${hostname}${NC}"
-        fi
-      else
-        if [ "$ip" = "127.0.0.1" ]; then
-          echo -e "    ${GREEN}${ip} (Membrain)${NC}"
-        else
-          echo -e "    ${YELLOW}${ip} (unknown)${NC}"
-        fi
-      fi
-    done
-  fi
-  echo ""
-}
-
 cmd_enable() {
   check_installed
-  local component="${1:-}"
-  case "$component" in
-    knowledge)
-      echo "Enabling knowledge graph (embedder sidecar)..."
-      # Set embedding backend to remote in .env
-      if grep -q "^EMBEDDING_BACKEND=" "${MEMBRAIN_HOME}/.env" 2>/dev/null; then
-        sed -i '' 's/^EMBEDDING_BACKEND=.*/EMBEDDING_BACKEND=remote/' "${MEMBRAIN_HOME}/.env"
-      else
-        echo "EMBEDDING_BACKEND=remote" >> "${MEMBRAIN_HOME}/.env"
-      fi
-      # Build and start embedder
-      docker compose -f "$COMPOSE_FILE" --profile knowledge build embedder
-      docker compose -f "$COMPOSE_FILE" --profile knowledge up -d
-      # Wait for embedder health
-      echo -n "Waiting for embedder"
+  local addon="${1:-}"
+  case "$addon" in
+    ml-search)
+      step "Enabling ML Search (semantic embeddings)..."
+      profiles_add "ml-search"
+      env_set "EMBEDDING_BACKEND" "remote"
+      docker compose -f "$COMPOSE_FILE" up -d embedder
+      echo -n "  Waiting for embedder"
       for i in $(seq 1 30); do
-        if docker compose -f "$COMPOSE_FILE" exec embedder python -c "import urllib.request; urllib.request.urlopen('http://localhost:8002/health')" 2>/dev/null; then
+        if docker compose -f "$COMPOSE_FILE" exec -T embedder curl -sf http://localhost:8002/health >/dev/null 2>&1; then
           echo -e " ${GREEN}ready${NC}"
-          echo -e "${GREEN}Knowledge graph enabled.${NC}"
+          docker compose -f "$COMPOSE_FILE" restart gateway
+          info "ML Search enabled. Gateway restarted."
           return
         fi
         echo -n "."
         sleep 3
       done
-      echo -e " ${YELLOW}timeout — check 'membrain logs'${NC}"
+      echo -e " ${YELLOW}still starting (model download may take a few minutes)${NC}"
+      info "ML Search enabled. Run 'membrain logs embedder' to check progress."
+      ;;
+    ml-ner)
+      step "Enabling ML NER (named entity recognition)..."
+      profiles_add "ml-ner"
+      env_set "PII_NER_URL" "http://ner:8003"
+      docker compose -f "$COMPOSE_FILE" up -d ner
+      echo -n "  Waiting for NER"
+      for i in $(seq 1 30); do
+        if docker compose -f "$COMPOSE_FILE" exec -T ner curl -sf http://localhost:8003/health >/dev/null 2>&1; then
+          echo -e " ${GREEN}ready${NC}"
+          docker compose -f "$COMPOSE_FILE" restart gateway
+          info "ML NER enabled. Gateway restarted."
+          return
+        fi
+        echo -n "."
+        sleep 3
+      done
+      echo -e " ${YELLOW}still starting (model download may take a few minutes)${NC}"
+      info "ML NER enabled. Run 'membrain logs ner' to check progress."
+      ;;
+    litellm)
+      step "Enabling LiteLLM (100+ model backends)..."
+      env_set "LITELLM" "true"
+      docker compose -f "$COMPOSE_FILE" up -d --build gateway
+      info "LiteLLM enabled. Gateway rebuilt and restarted."
       ;;
     *)
-      echo "Usage: membrain enable <component>"
+      echo "Unknown add-on: ${addon}"
       echo ""
-      echo "Components:"
-      echo "  knowledge   Enable knowledge graph (semantic search, auto-extraction)"
+      echo "Available add-ons:"
+      echo "  ml-search   Semantic knowledge search (sentence-transformers)"
+      echo "  ml-ner      ML-based PII detection (BERT NER)"
+      echo "  litellm     100+ LLM backends via LiteLLM"
+      exit 1
       ;;
   esac
 }
 
 cmd_disable() {
   check_installed
-  local component="${1:-}"
-  case "$component" in
-    knowledge)
-      echo "Disabling knowledge graph..."
+  local addon="${1:-}"
+  case "$addon" in
+    ml-search)
+      step "Disabling ML Search..."
+      profiles_remove "ml-search"
+      env_set "EMBEDDING_BACKEND" "local"
       docker compose -f "$COMPOSE_FILE" stop embedder 2>/dev/null || true
-      docker compose -f "$COMPOSE_FILE" rm -f embedder 2>/dev/null || true
-      sed -i '' 's/^EMBEDDING_BACKEND=.*/EMBEDDING_BACKEND=/' "${MEMBRAIN_HOME}/.env" 2>/dev/null || true
-      docker compose -f "$COMPOSE_FILE" up -d --force-recreate gateway
-      echo -e "${GREEN}Knowledge graph disabled.${NC}"
+      docker compose -f "$COMPOSE_FILE" restart gateway
+      info "ML Search disabled. Falling back to text search."
+      ;;
+    ml-ner)
+      step "Disabling ML NER..."
+      profiles_remove "ml-ner"
+      env_remove "PII_NER_URL"
+      docker compose -f "$COMPOSE_FILE" stop ner 2>/dev/null || true
+      docker compose -f "$COMPOSE_FILE" restart gateway
+      info "ML NER disabled. Using regex PII detection only."
+      ;;
+    litellm)
+      step "Disabling LiteLLM..."
+      env_remove "LITELLM"
+      docker compose -f "$COMPOSE_FILE" up -d --build gateway
+      info "LiteLLM disabled. Gateway rebuilt."
       ;;
     *)
-      echo "Usage: membrain disable <component>"
-      echo ""
-      echo "Components:"
-      echo "  knowledge   Disable knowledge graph"
+      echo "Unknown add-on: ${addon}"
+      echo "Run 'membrain addons' to see available add-ons."
+      exit 1
       ;;
   esac
+}
+
+cmd_addons() {
+  check_installed
+  echo "Membrain Add-ons"
+  echo "================"
+  echo ""
+
+  # ml-search
+  if profiles_has "ml-search"; then
+    echo -e "  ml-search   ${GREEN}enabled${NC}   Semantic knowledge search"
+  else
+    echo -e "  ml-search   ${YELLOW}disabled${NC}  Semantic knowledge search"
+  fi
+
+  # ml-ner
+  if profiles_has "ml-ner"; then
+    echo -e "  ml-ner      ${GREEN}enabled${NC}   ML-based PII detection (BERT NER)"
+  else
+    echo -e "  ml-ner      ${YELLOW}disabled${NC}  ML-based PII detection (BERT NER)"
+  fi
+
+  # litellm
+  if [ "$(env_get LITELLM)" = "true" ]; then
+    echo -e "  litellm     ${GREEN}enabled${NC}   100+ LLM backends"
+  else
+    echo -e "  litellm     ${YELLOW}disabled${NC}  100+ LLM backends"
+  fi
+
+  echo ""
+  echo "Enable:  membrain enable <addon>"
+  echo "Disable: membrain disable <addon>"
 }
 
 cmd_help() {
@@ -367,11 +337,10 @@ cmd_help() {
   echo "  logs        Stream gateway logs (Ctrl+C to stop)"
   echo "  start       Start Membrain and enable DNS routing"
   echo "  stop        Stop Membrain and disable DNS routing"
-  echo "  enable      Enable optional components (e.g. knowledge)"
-  echo "  disable     Disable optional components"
-  echo "  diagnose    Show DNS, TLS, and connection diagnostics"
-  echo "  repair      Fix DNS, certificates, and port forwarding"
   echo "  update      Pull latest version and restart"
+  echo "  addons      List available add-ons and their status"
+  echo "  enable      Enable an add-on (e.g. membrain enable ml-search)"
+  echo "  disable     Disable an add-on"
   echo "  uninstall   Remove Membrain completely"
   echo "  help        Show this help message"
   echo ""
@@ -383,11 +352,10 @@ case "${1:-help}" in
   logs)      shift; cmd_logs "$@" ;;
   stop)      cmd_stop ;;
   start)     cmd_start ;;
+  update)    cmd_update ;;
   enable)    shift; cmd_enable "$@" ;;
   disable)   shift; cmd_disable "$@" ;;
-  diagnose)  cmd_diagnose ;;
-  repair)    cmd_repair ;;
-  update)    cmd_update ;;
+  addons)    cmd_addons ;;
   uninstall) cmd_uninstall ;;
   help|*)    cmd_help ;;
 esac
