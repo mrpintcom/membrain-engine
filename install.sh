@@ -5,7 +5,7 @@
 #
 set -euo pipefail
 
-VERSION="0.1.0"
+VERSION="0.5.0"
 MEMBRAIN_HOME="${HOME}/.membrain"
 REPO_URL="https://github.com/mrpintcom/membrain-engine.git"
 
@@ -22,16 +22,36 @@ warn()  { echo -e "  ${YELLOW}!${NC} $1"; }
 fail()  { echo -e "  ${RED}✗${NC} $1"; exit 1; }
 step()  { echo -e "  ${BLUE}→${NC} $1"; }
 
+# ─── Detect platform ────────────────────────────────────────
+OS="$(uname -s)"
+is_macos=false
+is_linux=false
+
+case "$OS" in
+  Darwin) is_macos=true ;;
+  Linux)  is_linux=true ;;
+  *)      fail "Unsupported platform: ${OS}. Membrain supports macOS and Linux." ;;
+esac
+
 # Cleanup on failure — only cleans up artifacts that were actually created
 cleanup_on_failure() {
   echo ""
   warn "Installation failed. Cleaning up..."
-  # Only touch /etc/hosts and keychain if we got far enough to modify them
+  # Only touch /etc/hosts if we got far enough to modify it
   if grep -q "# membrain" /etc/hosts 2>/dev/null; then
-    sudo sed -i '' '/# membrain/d' /etc/hosts 2>/dev/null || true
+    if $is_macos; then
+      sudo sed -i '' '/# membrain/d' /etc/hosts 2>/dev/null || true
+    else
+      sudo sed -i '/# membrain/d' /etc/hosts 2>/dev/null || true
+    fi
   fi
-  if [ -f "${MEMBRAIN_HOME}/certs/membrain-ca.pem" ]; then
+  # Remove CA cert from trust store
+  if $is_macos && [ -f "${MEMBRAIN_HOME}/certs/membrain-ca.pem" ]; then
     sudo security remove-trusted-cert -d "${MEMBRAIN_HOME}/certs/membrain-ca.pem" 2>/dev/null || true
+  fi
+  if $is_linux && [ -f /usr/local/share/ca-certificates/membrain-ca.crt ]; then
+    sudo rm -f /usr/local/share/ca-certificates/membrain-ca.crt
+    sudo update-ca-certificates 2>/dev/null || true
   fi
   if [ -d "$MEMBRAIN_HOME" ]; then
     rm -rf "$MEMBRAIN_HOME"
@@ -57,68 +77,96 @@ fi
 
 echo "  Checking prerequisites..."
 
-# macOS version
-macos_version=$(sw_vers -productVersion 2>/dev/null || echo "0")
-macos_major=$(echo "$macos_version" | cut -d. -f1)
-if [ "$macos_major" -lt 13 ] 2>/dev/null; then
-  fail "macOS 13 (Ventura) or later required. You have ${macos_version}."
-fi
-info "macOS ${macos_version}"
-
-# Homebrew
-if command -v brew &>/dev/null; then
-  # Fix permissions if needed (common on Intel Macs)
-  brew_prefix=$(brew --prefix 2>/dev/null || echo "/usr/local")
-  if [ -d "${brew_prefix}/Homebrew" ] && [ ! -w "${brew_prefix}/Homebrew" ]; then
-    step "Fixing Homebrew permissions..."
-    sudo chown -R "$(whoami)" "${brew_prefix}/Homebrew"
+if $is_macos; then
+  # macOS version
+  macos_version=$(sw_vers -productVersion 2>/dev/null || echo "0")
+  macos_major=$(echo "$macos_version" | cut -d. -f1)
+  if [ "$macos_major" -lt 13 ] 2>/dev/null; then
+    fail "macOS 13 (Ventura) or later required. You have ${macos_version}."
   fi
-  # Update Homebrew to support latest macOS versions
-  step "Updating Homebrew..."
-  brew update --quiet 2>/dev/null || true
-  info "Homebrew"
-else
-  step "Installing Homebrew..."
-  NONINTERACTIVE=1 /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
-  # Add Homebrew to PATH for this session
-  eval "$(/opt/homebrew/bin/brew shellenv 2>/dev/null || /usr/local/bin/brew shellenv 2>/dev/null)"
-  info "Homebrew installed"
+  info "macOS ${macos_version}"
+
+  # Homebrew
+  if command -v brew &>/dev/null; then
+    brew_prefix=$(brew --prefix 2>/dev/null || echo "/usr/local")
+    if [ -d "${brew_prefix}/Homebrew" ] && [ ! -w "${brew_prefix}/Homebrew" ]; then
+      step "Fixing Homebrew permissions..."
+      sudo chown -R "$(whoami)" "${brew_prefix}/Homebrew"
+    fi
+    step "Updating Homebrew..."
+    brew update --quiet 2>/dev/null || true
+    info "Homebrew"
+  else
+    step "Installing Homebrew..."
+    NONINTERACTIVE=1 /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+    eval "$(/opt/homebrew/bin/brew shellenv 2>/dev/null || /usr/local/bin/brew shellenv 2>/dev/null)"
+    info "Homebrew installed"
+  fi
+fi
+
+if $is_linux; then
+  # Linux distro info
+  if [ -f /etc/os-release ]; then
+    . /etc/os-release
+    info "Linux (${PRETTY_NAME:-$ID})"
+  else
+    info "Linux"
+  fi
 fi
 
 # Git
 if ! command -v git &>/dev/null; then
   step "Installing git..."
-  brew install git
+  if $is_macos; then
+    brew install git
+  else
+    sudo apt-get update -qq && sudo apt-get install -y -qq git curl
+  fi
 fi
 
 # Docker
-if command -v docker &>/dev/null || [ -d "/Applications/Docker.app" ]; then
+if command -v docker &>/dev/null; then
+  info "Docker"
+elif $is_macos && [ -d "/Applications/Docker.app" ]; then
   info "Docker Desktop"
-  # Ensure docker CLI is on PATH (app may exist but CLI not linked)
-  if ! command -v docker &>/dev/null; then
-    step "Linking Docker CLI..."
-    open -a Docker --args --accept-license 2>/dev/null || true
-    # Wait for Docker to create CLI symlinks
-    for i in $(seq 1 20); do
-      command -v docker &>/dev/null && break
-      sleep 2
-    done
-  fi
+  step "Linking Docker CLI..."
+  open -a Docker --args --accept-license 2>/dev/null || true
+  for i in $(seq 1 20); do
+    command -v docker &>/dev/null && break
+    sleep 2
+  done
 else
-  step "Installing Docker Desktop via Homebrew..."
-  brew install --cask docker
-  info "Docker Desktop installed"
+  step "Installing Docker..."
+  if $is_macos; then
+    brew install --cask docker
+    info "Docker Desktop installed"
+  else
+    curl -fsSL https://get.docker.com | sudo sh
+    sudo usermod -aG docker "$USER" 2>/dev/null || true
+    sudo systemctl enable docker 2>/dev/null || true
+    sudo systemctl start docker 2>/dev/null || true
+    info "Docker installed"
+  fi
 fi
 
 # Docker Compose v2 check
 if ! docker compose version &>/dev/null; then
-  fail "Docker Compose plugin not found. Please install Docker Desktop."
+  if $is_linux; then
+    step "Installing Docker Compose plugin..."
+    sudo apt-get update -qq && sudo apt-get install -y -qq docker-compose-plugin
+  else
+    fail "Docker Compose plugin not found. Please install Docker Desktop."
+  fi
 fi
 
 # Start Docker if not running
 if ! docker info &>/dev/null 2>&1; then
-  step "Starting Docker Desktop..."
-  open -a Docker
+  step "Starting Docker..."
+  if $is_macos; then
+    open -a Docker
+  else
+    sudo systemctl start docker 2>/dev/null || true
+  fi
   echo -n "  Waiting for Docker"
   for i in $(seq 1 30); do
     if docker info &>/dev/null 2>&1; then
@@ -129,51 +177,70 @@ if ! docker info &>/dev/null 2>&1; then
     sleep 3
   done
   if ! docker info &>/dev/null 2>&1; then
-    fail "Docker failed to start after 90 seconds. Please start Docker Desktop manually and re-run."
+    fail "Docker failed to start after 90 seconds. Please start Docker manually and re-run."
   fi
 fi
 
 # Check ports
-if lsof -i :443 -sTCP:LISTEN &>/dev/null 2>&1; then
-  port_user=$(lsof -i :443 -sTCP:LISTEN 2>/dev/null | tail -1 | awk '{print $1}')
-  if [ "$port_user" = "com.docke" ] || [ "$port_user" = "docker" ] || [ "$port_user" = "vpnkit" ]; then
+check_port() {
+  local port=$1
+  if $is_macos; then
+    lsof -i ":${port}" -sTCP:LISTEN &>/dev/null 2>&1
+  else
+    ss -tlnp "sport = :${port}" 2>/dev/null | grep -q LISTEN
+  fi
+}
+
+if check_port 443; then
+  if $is_macos; then
+    port_user=$(lsof -i :443 -sTCP:LISTEN 2>/dev/null | tail -1 | awk '{print $1}')
+  else
+    port_user=$(ss -tlnp 'sport = :443' 2>/dev/null | awk 'NR>1{print $6}' | head -1)
+  fi
+  if echo "$port_user" | grep -qiE "docker|vpnkit|com.docke"; then
     warn "Docker is using port 443 — will be released when we start our stack."
   else
     fail "Port 443 is in use by '${port_user}'. Please stop it and re-run."
   fi
 fi
-if lsof -i :8001 -sTCP:LISTEN &>/dev/null 2>&1; then
-  port_user=$(lsof -i :8001 -sTCP:LISTEN 2>/dev/null | tail -1 | awk '{print $1}')
+if check_port 8001; then
+  if $is_macos; then
+    port_user=$(lsof -i :8001 -sTCP:LISTEN 2>/dev/null | tail -1 | awk '{print $1}')
+  else
+    port_user=$(ss -tlnp 'sport = :8001' 2>/dev/null | awk 'NR>1{print $6}' | head -1)
+  fi
   fail "Port 8001 is in use by '${port_user}'. Please stop it and re-run."
 fi
 
-# ─── API Key ──────────────────────────────────────────────
+# ─── API Key (optional) ──────────────────────────────────
 
 echo ""
-echo -n "  Enter your Anthropic API key: "
-read -r api_key </dev/tty
+echo -e "  Enter your Anthropic API key (or press Enter to skip):"
+echo -n "  > "
+read -r api_key </dev/tty || api_key=""
 
-if [ -z "$api_key" ]; then
-  fail "API key is required."
+if [ -n "$api_key" ]; then
+  step "Verifying API key..."
+  http_code=$(curl -s -o /dev/null -w "%{http_code}" \
+    -H "x-api-key: ${api_key}" \
+    -H "content-type: application/json" \
+    -H "anthropic-version: 2023-06-01" \
+    -d '{"model":"claude-haiku-4-5-20251001","max_tokens":1,"messages":[{"role":"user","content":"hi"}]}' \
+    "https://api.anthropic.com/v1/messages" 2>/dev/null || echo "000")
+
+  if [ "$http_code" = "000" ]; then
+    warn "Could not reach api.anthropic.com. Continuing without verification."
+  elif [ "$http_code" = "401" ]; then
+    warn "API key appears invalid. You can update it later in ~/.membrain/.env"
+  elif [ "$http_code" = "200" ]; then
+    info "API key verified"
+  else
+    warn "API returned HTTP ${http_code} — continuing anyway."
+  fi
+else
+  warn "No API key provided. You can add one later in ~/.membrain/.env"
+  warn "Session-based auth (Claude Code login) will still work."
 fi
-
-# Validate key
-step "Verifying API key..."
-http_code=$(curl -s -o /dev/null -w "%{http_code}" \
-  -H "x-api-key: ${api_key}" \
-  -H "content-type: application/json" \
-  -H "anthropic-version: 2023-06-01" \
-  -d '{"model":"claude-haiku-4-5-20251001","max_tokens":1,"messages":[{"role":"user","content":"hi"}]}' \
-  "https://api.anthropic.com/v1/messages" 2>/dev/null || echo "000")
-
-if [ "$http_code" = "000" ]; then
-  fail "Could not reach api.anthropic.com. Check your internet connection."
-elif [ "$http_code" = "401" ]; then
-  fail "Invalid API key. Please check and try again."
-elif [ "$http_code" != "200" ]; then
-  warn "API returned HTTP ${http_code} — continuing anyway."
-fi
-info "API key verified"
 
 # ─── Clone & Configure ───────────────────────────────────
 
@@ -186,14 +253,17 @@ step "Downloading Membrain..."
 git clone --depth 1 --quiet "$REPO_URL" "${MEMBRAIN_HOME}/src"
 
 # Validate clone
-if [ ! -f "${MEMBRAIN_HOME}/src/Dockerfile" ]; then
-  fail "Dockerfile not found in cloned repo. Clone may be corrupted."
+if [ ! -f "${MEMBRAIN_HOME}/src/deploy/docker-compose.yml" ]; then
+  fail "docker-compose.yml not found in cloned repo. Clone may be corrupted."
 fi
 info "Downloaded Membrain"
 
-# Copy installer configs
-cp "${MEMBRAIN_HOME}/src/deploy/installer/docker-compose.yml" "${MEMBRAIN_HOME}/docker-compose.yml"
-cp "${MEMBRAIN_HOME}/src/deploy/installer/Caddyfile" "${MEMBRAIN_HOME}/Caddyfile"
+# Copy deploy configs
+cp "${MEMBRAIN_HOME}/src/deploy/docker-compose.yml" "${MEMBRAIN_HOME}/docker-compose.yml"
+cp "${MEMBRAIN_HOME}/src/deploy/Caddyfile" "${MEMBRAIN_HOME}/Caddyfile"
+
+# Copy embedder sidecar
+cp -r "${MEMBRAIN_HOME}/src/deploy/embedder" "${MEMBRAIN_HOME}/embedder"
 
 # Write .env
 cat > "${MEMBRAIN_HOME}/.env" <<ENVEOF
@@ -260,8 +330,9 @@ info "Generated TLS certificates"
 
 # ─── Start Services ──────────────────────────────────────
 
-step "Starting services..."
-docker compose -f "${MEMBRAIN_HOME}/docker-compose.yml" up -d --build
+step "Pulling and starting services..."
+docker compose -f "${MEMBRAIN_HOME}/docker-compose.yml" pull gateway 2>/dev/null || true
+docker compose -f "${MEMBRAIN_HOME}/docker-compose.yml" up -d
 info "Started services (gateway, caddy, postgres, redis)"
 
 # ─── TLS Proxy Setup (sudo) ──────────────────────────────
@@ -271,10 +342,16 @@ echo -e "  ${BOLD}Membrain needs admin access to install a trusted${NC}"
 echo -e "  ${BOLD}certificate and configure DNS routing.${NC}"
 echo ""
 
-# Install CA to system keychain
-sudo security add-trusted-cert -d -r trustRoot \
-  -k /Library/Keychains/System.keychain \
-  "${MEMBRAIN_HOME}/certs/membrain-ca.pem"
+# Install CA to trust store
+if $is_macos; then
+  sudo security add-trusted-cert -d -r trustRoot \
+    -k /Library/Keychains/System.keychain \
+    "${MEMBRAIN_HOME}/certs/membrain-ca.pem"
+else
+  sudo cp "${MEMBRAIN_HOME}/certs/membrain-ca.pem" \
+    /usr/local/share/ca-certificates/membrain-ca.crt
+  sudo update-ca-certificates
+fi
 info "CA certificate trusted"
 
 # Add /etc/hosts entry
@@ -306,17 +383,40 @@ fi
 
 # ─── Install CLI Wrapper ─────────────────────────────────
 
-sudo cp "${MEMBRAIN_HOME}/src/deploy/installer/membrain-wrapper.sh" /usr/local/bin/membrain
+sudo cp "${MEMBRAIN_HOME}/src/deploy/membrain-wrapper.sh" /usr/local/bin/membrain
 sudo chmod +x /usr/local/bin/membrain
 info "Installed 'membrain' command"
 
 # ─── Auto-Start ──────────────────────────────────────────
 
-mkdir -p "${HOME}/Library/LaunchAgents"
-cp "${MEMBRAIN_HOME}/src/deploy/installer/com.membrain.docker.plist" \
-   "${HOME}/Library/LaunchAgents/com.membrain.docker.plist"
-launchctl load "${HOME}/Library/LaunchAgents/com.membrain.docker.plist" 2>/dev/null || true
-info "Auto-start configured"
+if $is_macos; then
+  mkdir -p "${HOME}/Library/LaunchAgents"
+  cp "${MEMBRAIN_HOME}/src/deploy/com.membrain.docker.plist" \
+     "${HOME}/Library/LaunchAgents/com.membrain.docker.plist"
+  launchctl load "${HOME}/Library/LaunchAgents/com.membrain.docker.plist" 2>/dev/null || true
+  info "Auto-start configured (launchd)"
+else
+  # Linux: systemd user service
+  mkdir -p "${HOME}/.config/systemd/user"
+  cat > "${HOME}/.config/systemd/user/membrain.service" <<SYSDEOF
+[Unit]
+Description=Membrain AI Gateway
+After=docker.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+WorkingDirectory=${MEMBRAIN_HOME}
+ExecStart=/usr/bin/docker compose -f ${MEMBRAIN_HOME}/docker-compose.yml up -d
+ExecStop=/usr/bin/docker compose -f ${MEMBRAIN_HOME}/docker-compose.yml stop
+
+[Install]
+WantedBy=default.target
+SYSDEOF
+  systemctl --user daemon-reload 2>/dev/null || true
+  systemctl --user enable membrain.service 2>/dev/null || true
+  info "Auto-start configured (systemd)"
+fi
 
 # ─── Disable cleanup trap (install succeeded) ────────────
 
@@ -342,6 +442,5 @@ echo "    membrain uninstall - clean removal"
 echo ""
 echo "  Optional add-ons (enable anytime):"
 echo "    membrain enable ml-search   - semantic knowledge search"
-echo "    membrain enable ml-ner      - ML-based PII detection"
 echo "    membrain enable litellm     - 100+ LLM backends"
 echo ""

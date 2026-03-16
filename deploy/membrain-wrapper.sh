@@ -152,7 +152,9 @@ cmd_update() {
   check_installed
   echo "Updating Membrain..."
   git -C "${MEMBRAIN_HOME}/src" pull --ff-only
-  docker compose -f "$COMPOSE_FILE" up -d --build gateway
+  cp "${MEMBRAIN_HOME}/src/deploy/docker-compose.yml" "${MEMBRAIN_HOME}/docker-compose.yml"
+  docker compose -f "$COMPOSE_FILE" pull gateway
+  docker compose -f "$COMPOSE_FILE" up -d gateway
   echo -e "${GREEN}Updated and restarted.${NC}"
 }
 
@@ -214,7 +216,7 @@ cmd_enable() {
       docker compose -f "$COMPOSE_FILE" up -d embedder
       echo -n "  Waiting for embedder"
       for i in $(seq 1 30); do
-        if docker compose -f "$COMPOSE_FILE" exec -T embedder curl -sf http://localhost:8002/health >/dev/null 2>&1; then
+        if docker compose -f "$COMPOSE_FILE" exec -T embedder python -c "import urllib.request; urllib.request.urlopen('http://localhost:8002/health')" >/dev/null 2>&1; then
           echo -e " ${GREEN}ready${NC}"
           docker compose -f "$COMPOSE_FILE" restart gateway
           info "ML Search enabled. Gateway restarted."
