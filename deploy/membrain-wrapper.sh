@@ -18,6 +18,7 @@ check_installed() {
   fi
 }
 
+# ─── /etc/hosts helpers (used by transparent-proxy addon) ─
 add_hosts_entry() {
   if ! grep -q "$HOSTS_TAG" /etc/hosts 2>/dev/null; then
     echo "$HOSTS_ENTRY" | sudo tee -a /etc/hosts >/dev/null
@@ -27,7 +28,11 @@ add_hosts_entry() {
 
 remove_hosts_entry() {
   if grep -q "$HOSTS_TAG" /etc/hosts 2>/dev/null; then
-    sudo sed -i '' "/${HOSTS_TAG}/d" /etc/hosts
+    if [[ "$OSTYPE" == darwin* ]]; then
+      sudo sed -i '' "/${HOSTS_TAG}/d" /etc/hosts
+    else
+      sudo sed -i "/${HOSTS_TAG}/d" /etc/hosts
+    fi
     echo -e "${YELLOW}DNS routing disabled${NC}"
   fi
 }
@@ -37,26 +42,24 @@ remove_hosts_entry() {
 ENV_FILE="${MEMBRAIN_HOME}/.env"
 
 env_get() {
-  # Get value of a key from .env (empty string if not found)
   grep -E "^${1}=" "$ENV_FILE" 2>/dev/null | head -1 | cut -d= -f2-
 }
 
 env_set() {
-  # Set key=value in .env (creates or updates)
   if grep -qE "^${1}=" "$ENV_FILE" 2>/dev/null; then
-    sed -i '' "s|^${1}=.*|${1}=${2}|" "$ENV_FILE"
+    sed -i '' "s|^${1}=.*|${1}=${2}|" "$ENV_FILE" 2>/dev/null || \
+    sed -i "s|^${1}=.*|${1}=${2}|" "$ENV_FILE"
   else
     echo "${1}=${2}" >> "$ENV_FILE"
   fi
 }
 
 env_remove() {
-  # Remove a key from .env
-  sed -i '' "/^${1}=/d" "$ENV_FILE" 2>/dev/null || true
+  sed -i '' "/^${1}=/d" "$ENV_FILE" 2>/dev/null || \
+  sed -i "/^${1}=/d" "$ENV_FILE" 2>/dev/null || true
 }
 
 profiles_add() {
-  # Add a profile to COMPOSE_PROFILES (comma-separated)
   local current
   current=$(env_get "COMPOSE_PROFILES")
   if [ -z "$current" ]; then
@@ -67,10 +70,8 @@ profiles_add() {
 }
 
 profiles_remove() {
-  # Remove a profile from COMPOSE_PROFILES
   local current
   current=$(env_get "COMPOSE_PROFILES")
-  # Remove the profile, clean up commas
   local updated
   updated=$(echo "$current" | sed "s/${1}//" | sed 's/,,/,/g' | sed 's/^,//' | sed 's/,$//')
   if [ -z "$updated" ]; then
@@ -81,7 +82,6 @@ profiles_remove() {
 }
 
 profiles_has() {
-  # Check if a profile is in COMPOSE_PROFILES
   local current
   current=$(env_get "COMPOSE_PROFILES")
   echo ",$current," | grep -q ",$1,"
@@ -89,6 +89,10 @@ profiles_has() {
 
 step() { echo -e "  $1"; }
 info() { echo -e "  ${GREEN}$1${NC}"; }
+
+is_transparent_proxy_enabled() {
+  [ -f "${MEMBRAIN_HOME}/certs/membrain-ca.pem" ] && grep -q "$HOSTS_TAG" /etc/hosts 2>/dev/null
+}
 
 cmd_status() {
   check_installed
@@ -103,11 +107,11 @@ cmd_status() {
     echo -e "  Gateway:  ${RED}not responding${NC}"
   fi
 
-  # DNS routing
-  if grep -q "$HOSTS_TAG" /etc/hosts 2>/dev/null; then
-    echo -e "  DNS:      ${GREEN}routing through Membrain${NC}"
+  # Proxy mode
+  if is_transparent_proxy_enabled; then
+    echo -e "  Mode:     ${GREEN}transparent proxy (all AI traffic intercepted)${NC}"
   else
-    echo -e "  DNS:      ${YELLOW}direct (Membrain bypassed)${NC}"
+    echo -e "  Mode:     explicit proxy (ANTHROPIC_BASE_URL)"
   fi
 
   echo ""
@@ -124,7 +128,9 @@ cmd_logs() {
 cmd_stop() {
   check_installed
   echo "Stopping Membrain..."
-  remove_hosts_entry
+  if is_transparent_proxy_enabled; then
+    remove_hosts_entry
+  fi
   docker compose -f "$COMPOSE_FILE" stop
   echo -e "${YELLOW}Membrain stopped. AI traffic goes directly to providers.${NC}"
 }
@@ -133,7 +139,9 @@ cmd_start() {
   check_installed
   echo "Starting Membrain..."
   docker compose -f "$COMPOSE_FILE" start
-  add_hosts_entry
+  if is_transparent_proxy_enabled; then
+    add_hosts_entry
+  fi
 
   # Wait for health
   echo -n "Waiting for gateway"
@@ -172,24 +180,36 @@ cmd_uninstall() {
   echo ""
   echo "Removing Membrain..."
 
-  # 1. Remove CA cert from keychain (before deleting files)
+  # 1. Remove transparent proxy if enabled
   if [ -f "${MEMBRAIN_HOME}/certs/membrain-ca.pem" ]; then
-    sudo security remove-trusted-cert -d "${MEMBRAIN_HOME}/certs/membrain-ca.pem" 2>/dev/null || true
-    echo "  Removed CA certificate from keychain"
+    if [[ "$OSTYPE" == darwin* ]]; then
+      sudo security remove-trusted-cert -d "${MEMBRAIN_HOME}/certs/membrain-ca.pem" 2>/dev/null || true
+    elif [ -f /usr/local/share/ca-certificates/membrain-ca.crt ]; then
+      sudo rm -f /usr/local/share/ca-certificates/membrain-ca.crt
+      sudo update-ca-certificates 2>/dev/null || true
+    fi
+    echo "  Removed CA certificate"
   fi
 
   # 2. Stop and remove containers + volumes + images
   docker compose -f "$COMPOSE_FILE" down -v --rmi all 2>/dev/null || true
   echo "  Stopped and removed containers"
 
-  # 3. Remove /etc/hosts entry
+  # 3. Remove /etc/hosts entry if present
   remove_hosts_entry
 
-  # 4. Unload launchd plist
+  # 4. Unload launchd plist / systemd
   local plist_path="${HOME}/Library/LaunchAgents/com.membrain.docker.plist"
   if [ -f "$plist_path" ]; then
     launchctl unload "$plist_path" 2>/dev/null || true
     rm -f "$plist_path"
+    echo "  Removed auto-start configuration"
+  fi
+  local systemd_path="${HOME}/.config/systemd/user/membrain.service"
+  if [ -f "$systemd_path" ]; then
+    systemctl --user disable membrain.service 2>/dev/null || true
+    rm -f "$systemd_path"
+    systemctl --user daemon-reload 2>/dev/null || true
     echo "  Removed auto-start configuration"
   fi
 
@@ -197,8 +217,8 @@ cmd_uninstall() {
   rm -rf "$MEMBRAIN_HOME"
   echo "  Removed ~/.membrain"
 
-  # 6. Remove CLI wrapper (this script — must be last)
-  sudo rm -f /usr/local/bin/membrain
+  # 6. Remove CLI wrapper
+  rm -f "${HOME}/.local/bin/membrain"
   echo "  Removed membrain command"
 
   echo ""
@@ -231,15 +251,101 @@ cmd_enable() {
     litellm)
       step "Enabling LiteLLM (100+ model backends)..."
       env_set "LITELLM" "true"
-      docker compose -f "$COMPOSE_FILE" up -d --build gateway
-      info "LiteLLM enabled. Gateway rebuilt and restarted."
+      docker compose -f "$COMPOSE_FILE" pull gateway 2>/dev/null || true
+      docker compose -f "$COMPOSE_FILE" up -d gateway
+      info "LiteLLM enabled. Gateway restarted."
+      ;;
+    transparent-proxy)
+      step "Enabling transparent proxy (intercepts all AI traffic)..."
+      echo ""
+      echo -e "  ${YELLOW}This will:${NC}"
+      echo "    - Generate a local CA certificate"
+      echo "    - Add it to your system trust store (requires sudo)"
+      echo "    - Redirect api.anthropic.com to localhost via /etc/hosts"
+      echo ""
+      echo -n "  Continue? [y/N] "
+      read -r yn </dev/tty || yn="n"
+      if [ "$yn" != "y" ] && [ "$yn" != "Y" ]; then
+        echo "  Cancelled."
+        return
+      fi
+
+      # Generate certs if not already present
+      if [ ! -f "${MEMBRAIN_HOME}/certs/membrain-ca.pem" ]; then
+        mkdir -p "${MEMBRAIN_HOME}/certs"
+
+        openssl req -x509 -newkey rsa:2048 -nodes -days 825 \
+          -keyout "${MEMBRAIN_HOME}/certs/membrain-ca-key.pem" \
+          -out "${MEMBRAIN_HOME}/certs/membrain-ca.pem" \
+          -subj "/CN=Membrain Gateway CA/O=Membrain" \
+          2>/dev/null
+
+        openssl req -newkey rsa:2048 -nodes \
+          -keyout "${MEMBRAIN_HOME}/certs/api.anthropic.com-key.pem" \
+          -out "${MEMBRAIN_HOME}/certs/api.anthropic.com.csr" \
+          -subj "/CN=api.anthropic.com" \
+          2>/dev/null
+
+        cat > "${MEMBRAIN_HOME}/certs/san.cnf" <<SANEOF
+[req]
+distinguished_name = req_dn
+[req_dn]
+[v3_leaf]
+basicConstraints = CA:FALSE
+subjectAltName = DNS:api.anthropic.com
+keyUsage = digitalSignature, keyEncipherment
+extendedKeyUsage = serverAuth
+SANEOF
+
+        openssl x509 -req \
+          -in "${MEMBRAIN_HOME}/certs/api.anthropic.com.csr" \
+          -CA "${MEMBRAIN_HOME}/certs/membrain-ca.pem" \
+          -CAkey "${MEMBRAIN_HOME}/certs/membrain-ca-key.pem" \
+          -CAcreateserial \
+          -out "${MEMBRAIN_HOME}/certs/api.anthropic.com.pem" \
+          -days 825 \
+          -extfile "${MEMBRAIN_HOME}/certs/san.cnf" \
+          -extensions v3_leaf \
+          2>/dev/null
+
+        rm -f "${MEMBRAIN_HOME}/certs/api.anthropic.com.csr" \
+              "${MEMBRAIN_HOME}/certs/san.cnf" \
+              "${MEMBRAIN_HOME}/certs/membrain-ca.srl"
+
+        chmod 700 "${MEMBRAIN_HOME}/certs"
+        chmod 600 "${MEMBRAIN_HOME}/certs/membrain-ca-key.pem"
+        chmod 600 "${MEMBRAIN_HOME}/certs/api.anthropic.com-key.pem"
+        info "Generated TLS certificates"
+      fi
+
+      # Trust the CA
+      if [[ "$OSTYPE" == darwin* ]]; then
+        sudo security add-trusted-cert -d -r trustRoot \
+          -k /Library/Keychains/System.keychain \
+          "${MEMBRAIN_HOME}/certs/membrain-ca.pem"
+      else
+        sudo cp "${MEMBRAIN_HOME}/certs/membrain-ca.pem" \
+          /usr/local/share/ca-certificates/membrain-ca.crt
+        sudo update-ca-certificates
+      fi
+      info "CA certificate trusted"
+
+      # Copy Caddyfile and start Caddy
+      cp "${MEMBRAIN_HOME}/src/deploy/Caddyfile" "${MEMBRAIN_HOME}/Caddyfile"
+      profiles_add "tls-proxy"
+      docker compose -f "$COMPOSE_FILE" up -d caddy 2>/dev/null || true
+
+      # Add hosts entry
+      add_hosts_entry
+      info "Transparent proxy enabled. All AI traffic now routes through Membrain."
       ;;
     *)
       echo "Unknown add-on: ${addon}"
       echo ""
       echo "Available add-ons:"
-      echo "  ml-search   Semantic knowledge search (sentence-transformers)"
-      echo "  litellm     100+ LLM backends via LiteLLM"
+      echo "  ml-search          Semantic knowledge search (sentence-transformers)"
+      echo "  litellm            100+ LLM backends via LiteLLM"
+      echo "  transparent-proxy  Intercept all AI traffic (certs + DNS)"
       exit 1
       ;;
   esac
@@ -260,8 +366,35 @@ cmd_disable() {
     litellm)
       step "Disabling LiteLLM..."
       env_remove "LITELLM"
-      docker compose -f "$COMPOSE_FILE" up -d --build gateway
-      info "LiteLLM disabled. Gateway rebuilt."
+      docker compose -f "$COMPOSE_FILE" pull gateway 2>/dev/null || true
+      docker compose -f "$COMPOSE_FILE" up -d gateway
+      info "LiteLLM disabled. Gateway restarted."
+      ;;
+    transparent-proxy)
+      step "Disabling transparent proxy..."
+
+      # Remove hosts entry
+      remove_hosts_entry
+
+      # Remove CA from trust store
+      if [ -f "${MEMBRAIN_HOME}/certs/membrain-ca.pem" ]; then
+        if [[ "$OSTYPE" == darwin* ]]; then
+          sudo security remove-trusted-cert -d "${MEMBRAIN_HOME}/certs/membrain-ca.pem" 2>/dev/null || true
+        elif [ -f /usr/local/share/ca-certificates/membrain-ca.crt ]; then
+          sudo rm -f /usr/local/share/ca-certificates/membrain-ca.crt
+          sudo update-ca-certificates 2>/dev/null || true
+        fi
+      fi
+
+      # Stop Caddy
+      profiles_remove "tls-proxy"
+      docker compose -f "$COMPOSE_FILE" stop caddy 2>/dev/null || true
+
+      # Remove certs
+      rm -rf "${MEMBRAIN_HOME}/certs"
+      rm -f "${MEMBRAIN_HOME}/Caddyfile"
+
+      info "Transparent proxy disabled. Use ANTHROPIC_BASE_URL for routing."
       ;;
     *)
       echo "Unknown add-on: ${addon}"
@@ -279,16 +412,23 @@ cmd_addons() {
 
   # ml-search
   if profiles_has "ml-search"; then
-    echo -e "  ml-search   ${GREEN}enabled${NC}   Semantic knowledge search"
+    echo -e "  ml-search           ${GREEN}enabled${NC}   Semantic knowledge search"
   else
-    echo -e "  ml-search   ${YELLOW}disabled${NC}  Semantic knowledge search"
+    echo -e "  ml-search           ${YELLOW}disabled${NC}  Semantic knowledge search"
   fi
 
   # litellm
   if [ "$(env_get LITELLM)" = "true" ]; then
-    echo -e "  litellm     ${GREEN}enabled${NC}   100+ LLM backends"
+    echo -e "  litellm             ${GREEN}enabled${NC}   100+ LLM backends"
   else
-    echo -e "  litellm     ${YELLOW}disabled${NC}  100+ LLM backends"
+    echo -e "  litellm             ${YELLOW}disabled${NC}  100+ LLM backends"
+  fi
+
+  # transparent-proxy
+  if is_transparent_proxy_enabled; then
+    echo -e "  transparent-proxy   ${GREEN}enabled${NC}   Intercept all AI traffic"
+  else
+    echo -e "  transparent-proxy   ${YELLOW}disabled${NC}  Intercept all AI traffic"
   fi
 
   echo ""
@@ -302,8 +442,8 @@ cmd_help() {
   echo "Commands:"
   echo "  status      Check if Membrain is running"
   echo "  logs        Stream gateway logs (Ctrl+C to stop)"
-  echo "  start       Start Membrain and enable DNS routing"
-  echo "  stop        Stop Membrain and disable DNS routing"
+  echo "  start       Start Membrain"
+  echo "  stop        Stop Membrain"
   echo "  update      Pull latest version and restart"
   echo "  addons      List available add-ons and their status"
   echo "  enable      Enable an add-on (e.g. membrain enable ml-search)"

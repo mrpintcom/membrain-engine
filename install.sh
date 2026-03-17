@@ -33,26 +33,10 @@ case "$OS" in
   *)      fail "Unsupported platform: ${OS}. Membrain supports macOS and Linux." ;;
 esac
 
-# Cleanup on failure — only cleans up artifacts that were actually created
+# Cleanup on failure
 cleanup_on_failure() {
   echo ""
   warn "Installation failed. Cleaning up..."
-  # Only touch /etc/hosts if we got far enough to modify it
-  if grep -q "# membrain" /etc/hosts 2>/dev/null; then
-    if $is_macos; then
-      sudo sed -i '' '/# membrain/d' /etc/hosts 2>/dev/null || true
-    else
-      sudo sed -i '/# membrain/d' /etc/hosts 2>/dev/null || true
-    fi
-  fi
-  # Remove CA cert from trust store
-  if $is_macos && [ -f "${MEMBRAIN_HOME}/certs/membrain-ca.pem" ]; then
-    sudo security remove-trusted-cert -d "${MEMBRAIN_HOME}/certs/membrain-ca.pem" 2>/dev/null || true
-  fi
-  if $is_linux && [ -f /usr/local/share/ca-certificates/membrain-ca.crt ]; then
-    sudo rm -f /usr/local/share/ca-certificates/membrain-ca.crt
-    sudo update-ca-certificates 2>/dev/null || true
-  fi
   if [ -d "$MEMBRAIN_HOME" ]; then
     rm -rf "$MEMBRAIN_HOME"
   fi
@@ -78,7 +62,6 @@ fi
 echo "  Checking prerequisites..."
 
 if $is_macos; then
-  # macOS version
   macos_version=$(sw_vers -productVersion 2>/dev/null || echo "0")
   macos_major=$(echo "$macos_version" | cut -d. -f1)
   if [ "$macos_major" -lt 13 ] 2>/dev/null; then
@@ -105,7 +88,6 @@ if $is_macos; then
 fi
 
 if $is_linux; then
-  # Linux distro info
   if [ -f /etc/os-release ]; then
     . /etc/os-release
     info "Linux (${PRETTY_NAME:-$ID})"
@@ -181,35 +163,9 @@ if ! docker info &>/dev/null 2>&1; then
   fi
 fi
 
-# Check ports
-check_port() {
-  local port=$1
-  if $is_macos; then
-    lsof -i ":${port}" -sTCP:LISTEN &>/dev/null 2>&1
-  else
-    ss -tlnp "sport = :${port}" 2>/dev/null | grep -q LISTEN
-  fi
-}
-
-if check_port 443; then
-  if $is_macos; then
-    port_user=$(lsof -i :443 -sTCP:LISTEN 2>/dev/null | tail -1 | awk '{print $1}')
-  else
-    port_user=$(ss -tlnp 'sport = :443' 2>/dev/null | awk 'NR>1{print $6}' | head -1)
-  fi
-  if echo "$port_user" | grep -qiE "docker|vpnkit|com.docke"; then
-    warn "Docker is using port 443 — will be released when we start our stack."
-  else
-    fail "Port 443 is in use by '${port_user}'. Please stop it and re-run."
-  fi
-fi
-if check_port 8001; then
-  if $is_macos; then
-    port_user=$(lsof -i :8001 -sTCP:LISTEN 2>/dev/null | tail -1 | awk '{print $1}')
-  else
-    port_user=$(ss -tlnp 'sport = :8001' 2>/dev/null | awk 'NR>1{print $6}' | head -1)
-  fi
-  fail "Port 8001 is in use by '${port_user}'. Please stop it and re-run."
+# Check port 8001
+if lsof -i :8001 -sTCP:LISTEN &>/dev/null 2>&1 || ss -tlnp 'sport = :8001' 2>/dev/null | grep -q LISTEN; then
+  fail "Port 8001 is already in use. Please stop the service using it and re-run."
 fi
 
 # ─── API Key (optional) ──────────────────────────────────
@@ -260,7 +216,6 @@ info "Downloaded Membrain"
 
 # Copy deploy configs
 cp "${MEMBRAIN_HOME}/src/deploy/docker-compose.yml" "${MEMBRAIN_HOME}/docker-compose.yml"
-cp "${MEMBRAIN_HOME}/src/deploy/Caddyfile" "${MEMBRAIN_HOME}/Caddyfile"
 
 # Copy embedder sidecar
 cp -r "${MEMBRAIN_HOME}/src/deploy/embedder" "${MEMBRAIN_HOME}/embedder"
@@ -273,92 +228,12 @@ REDIS_URL=redis://redis:6379
 ENVEOF
 chmod 600 "${MEMBRAIN_HOME}/.env"
 
-# ─── Certificate Generation ──────────────────────────────
-
-step "Generating TLS certificates..."
-mkdir -p "${MEMBRAIN_HOME}/certs"
-
-# Generate CA
-openssl req -x509 -newkey rsa:2048 -nodes -days 825 \
-  -keyout "${MEMBRAIN_HOME}/certs/membrain-ca-key.pem" \
-  -out "${MEMBRAIN_HOME}/certs/membrain-ca.pem" \
-  -subj "/CN=Membrain Gateway CA/O=Membrain" \
-  2>/dev/null
-
-# Generate leaf cert for api.anthropic.com
-openssl req -newkey rsa:2048 -nodes \
-  -keyout "${MEMBRAIN_HOME}/certs/api.anthropic.com-key.pem" \
-  -out "${MEMBRAIN_HOME}/certs/api.anthropic.com.csr" \
-  -subj "/CN=api.anthropic.com" \
-  2>/dev/null
-
-# Create SAN config
-cat > "${MEMBRAIN_HOME}/certs/san.cnf" <<SANEOF
-[req]
-distinguished_name = req_dn
-[req_dn]
-[v3_leaf]
-basicConstraints = CA:FALSE
-subjectAltName = DNS:api.anthropic.com
-keyUsage = digitalSignature, keyEncipherment
-extendedKeyUsage = serverAuth
-SANEOF
-
-# Sign leaf cert with CA
-openssl x509 -req \
-  -in "${MEMBRAIN_HOME}/certs/api.anthropic.com.csr" \
-  -CA "${MEMBRAIN_HOME}/certs/membrain-ca.pem" \
-  -CAkey "${MEMBRAIN_HOME}/certs/membrain-ca-key.pem" \
-  -CAcreateserial \
-  -out "${MEMBRAIN_HOME}/certs/api.anthropic.com.pem" \
-  -days 825 \
-  -extfile "${MEMBRAIN_HOME}/certs/san.cnf" \
-  -extensions v3_leaf \
-  2>/dev/null
-
-# Clean up temp files
-rm -f "${MEMBRAIN_HOME}/certs/api.anthropic.com.csr" \
-      "${MEMBRAIN_HOME}/certs/san.cnf" \
-      "${MEMBRAIN_HOME}/certs/membrain-ca.srl"
-
-# Set permissions
-chmod 700 "${MEMBRAIN_HOME}/certs"
-chmod 600 "${MEMBRAIN_HOME}/certs/membrain-ca-key.pem"
-chmod 600 "${MEMBRAIN_HOME}/certs/api.anthropic.com-key.pem"
-
-info "Generated TLS certificates"
-
 # ─── Start Services ──────────────────────────────────────
 
 step "Pulling and starting services..."
 docker compose -f "${MEMBRAIN_HOME}/docker-compose.yml" pull gateway 2>/dev/null || true
 docker compose -f "${MEMBRAIN_HOME}/docker-compose.yml" up -d
-info "Started services (gateway, caddy, postgres, redis)"
-
-# ─── TLS Proxy Setup (sudo) ──────────────────────────────
-
-echo ""
-echo -e "  ${BOLD}Membrain needs admin access to install a trusted${NC}"
-echo -e "  ${BOLD}certificate and configure DNS routing.${NC}"
-echo ""
-
-# Install CA to trust store
-if $is_macos; then
-  sudo security add-trusted-cert -d -r trustRoot \
-    -k /Library/Keychains/System.keychain \
-    "${MEMBRAIN_HOME}/certs/membrain-ca.pem"
-else
-  sudo cp "${MEMBRAIN_HOME}/certs/membrain-ca.pem" \
-    /usr/local/share/ca-certificates/membrain-ca.crt
-  sudo update-ca-certificates
-fi
-info "CA certificate trusted"
-
-# Add /etc/hosts entry
-if ! grep -q "# membrain" /etc/hosts 2>/dev/null; then
-  echo "127.0.0.1 api.anthropic.com  # membrain" | sudo tee -a /etc/hosts >/dev/null
-fi
-info "DNS routing configured"
+info "Started services (gateway, postgres, redis)"
 
 # ─── Health Check ─────────────────────────────────────────
 
@@ -383,9 +258,44 @@ fi
 
 # ─── Install CLI Wrapper ─────────────────────────────────
 
-sudo cp "${MEMBRAIN_HOME}/src/deploy/membrain-wrapper.sh" /usr/local/bin/membrain
-sudo chmod +x /usr/local/bin/membrain
+mkdir -p "${HOME}/.local/bin"
+cp "${MEMBRAIN_HOME}/src/deploy/membrain-wrapper.sh" "${HOME}/.local/bin/membrain"
+chmod +x "${HOME}/.local/bin/membrain"
+
+# Ensure ~/.local/bin is on PATH
+if ! echo "$PATH" | grep -q "${HOME}/.local/bin"; then
+  shell_rc=""
+  if [ -f "${HOME}/.zshrc" ]; then
+    shell_rc="${HOME}/.zshrc"
+  elif [ -f "${HOME}/.bashrc" ]; then
+    shell_rc="${HOME}/.bashrc"
+  fi
+  if [ -n "$shell_rc" ]; then
+    echo 'export PATH="${HOME}/.local/bin:${PATH}"' >> "$shell_rc"
+  fi
+fi
 info "Installed 'membrain' command"
+
+# ─── Configure ANTHROPIC_BASE_URL ────────────────────────
+
+shell_rc=""
+if [ -f "${HOME}/.zshrc" ]; then
+  shell_rc="${HOME}/.zshrc"
+elif [ -f "${HOME}/.bashrc" ]; then
+  shell_rc="${HOME}/.bashrc"
+fi
+
+if [ -n "$shell_rc" ]; then
+  if ! grep -q "ANTHROPIC_BASE_URL" "$shell_rc" 2>/dev/null; then
+    echo 'export ANTHROPIC_BASE_URL=http://localhost:8001' >> "$shell_rc"
+    info "Added ANTHROPIC_BASE_URL to ${shell_rc}"
+  else
+    info "ANTHROPIC_BASE_URL already configured"
+  fi
+fi
+
+# Export for this session
+export ANTHROPIC_BASE_URL=http://localhost:8001
 
 # ─── Auto-Start ──────────────────────────────────────────
 
@@ -396,7 +306,6 @@ if $is_macos; then
   launchctl load "${HOME}/Library/LaunchAgents/com.membrain.docker.plist" 2>/dev/null || true
   info "Auto-start configured (launchd)"
 else
-  # Linux: systemd user service
   mkdir -p "${HOME}/.config/systemd/user"
   cat > "${HOME}/.config/systemd/user/membrain.service" <<SYSDEOF
 [Unit]
@@ -428,8 +337,9 @@ echo ""
 echo -e "  ${GREEN}${BOLD}Membrain is running!${NC}"
 echo ""
 echo "  Dashboard:  http://localhost:8001"
-echo "  All traffic to api.anthropic.com now routes through Membrain."
-echo "  Works with: Claude Desktop, Claude Code, browsers, any app."
+echo ""
+echo "  AI traffic routes through Membrain when ANTHROPIC_BASE_URL is set."
+echo "  Open a new terminal (or run: source ${shell_rc:-~/.zshrc}) to activate."
 echo ""
 echo "  Commands:"
 echo "    membrain status    - check health"
@@ -441,6 +351,7 @@ echo "    membrain addons    - list optional add-ons"
 echo "    membrain uninstall - clean removal"
 echo ""
 echo "  Optional add-ons (enable anytime):"
-echo "    membrain enable ml-search   - semantic knowledge search"
-echo "    membrain enable litellm     - 100+ LLM backends"
+echo "    membrain enable ml-search          - semantic knowledge search"
+echo "    membrain enable litellm            - 100+ LLM backends"
+echo "    membrain enable transparent-proxy  - intercept all AI traffic (advanced)"
 echo ""
