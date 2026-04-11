@@ -30,7 +30,7 @@ services:
     environment:
       POSTGRES_DB: membrain
       POSTGRES_USER: membrain
-      POSTGRES_PASSWORD: membrain
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
     volumes:
       - pgdata:/var/lib/postgresql/data
     healthcheck:
@@ -42,6 +42,7 @@ services:
 
   redis:
     image: redis:7-alpine
+    command: ["redis-server", "--requirepass", "${REDIS_PASSWORD:?Set REDIS_PASSWORD in .env}"]
     restart: unless-stopped
 
   embedder:

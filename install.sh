@@ -5,7 +5,7 @@
 #
 set -euo pipefail
 
-VERSION="0.8.1"
+VERSION="0.9.0"
 MEMBRAIN_HOME="${HOME}/.membrain"
 REPO_URL="https://github.com/mrpintcom/membrain-engine.git"
 
@@ -220,11 +220,17 @@ cp "${MEMBRAIN_HOME}/src/deploy/docker-compose.yml" "${MEMBRAIN_HOME}/docker-com
 # Copy embedder sidecar
 cp -r "${MEMBRAIN_HOME}/src/deploy/embedder" "${MEMBRAIN_HOME}/embedder"
 
+# Generate random credentials
+PG_PASS=$(openssl rand -hex 16)
+REDIS_PASS=$(openssl rand -hex 16)
+
 # Write .env
 cat > "${MEMBRAIN_HOME}/.env" <<ENVEOF
 ANTHROPIC_API_KEY=${api_key}
-DATABASE_URL=postgresql+asyncpg://membrain:membrain@postgres:5432/membrain
-REDIS_URL=redis://redis:6379
+POSTGRES_PASSWORD=${PG_PASS}
+REDIS_PASSWORD=${REDIS_PASS}
+DATABASE_URL=postgresql+asyncpg://membrain:${PG_PASS}@postgres:5432/membrain
+REDIS_URL=redis://:${REDIS_PASS}@redis:6379/0
 ENVEOF
 chmod 600 "${MEMBRAIN_HOME}/.env"
 
