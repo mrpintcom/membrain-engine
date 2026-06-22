@@ -16,8 +16,13 @@ services:
 
   caddy:
     image: caddy:2-alpine
+    # Only start under the tls-proxy profile (wrapper sets COMPOSE_PROFILES via
+    # profiles_add) — otherwise caddy starts on every base 'up -d' and crash-loops
+    # with no Caddyfile/cert present. Listen on :443 to match the host
+    # api.anthropic.com -> 127.0.0.1 redirect (was :8443, which nothing reached). (review 2026-06-17)
+    profiles: ["tls-proxy"]
     ports:
-      - "8443:8443"
+      - "443:443"
     volumes:
       - ./certs:/certs:ro
       - ./Caddyfile:/etc/caddy/Caddyfile:ro

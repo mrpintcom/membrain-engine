@@ -37,6 +37,85 @@ remove_hosts_entry() {
   fi
 }
 
+# ─── transparent-proxy certificate generation (C8) ───────
+# Generate the proxy CA + leaf for a single intercepted host, then DELETE the CA
+# private key. The CA carries X.509 nameConstraints limiting it to that host, so
+# even if the system-trusted CA certificate is exfiltrated it cannot forge a leaf
+# for any other domain — a conforming client rejects e.g. a www.google.com leaf
+# ("permitted subtree violation"). Caddy serves the pre-generated leaf directly
+# and never needs the CA key at runtime, so removing the key leaves NO
+# passphrase-less machine-wide MITM primitive on disk. Set MEMBRAIN_RETAIN_CA_KEY=1
+# to keep the key (e.g. to add another intercepted host later) — you are then
+# responsible for protecting it.
+# Renewal: the CA + leaf are valid 825 days. Since the key is removed, renewal is
+# a `disable` + `enable` cycle (which regenerates and re-trusts a fresh CA), not
+# an in-place re-sign.
+gen_proxy_certs() {
+  local certs_dir="$1" host="$2"
+  mkdir -p "$certs_dir"
+  chmod 700 "$certs_dir"
+
+  local ca_cnf leaf_cnf
+  ca_cnf="$(mktemp)"
+  leaf_cnf="$(mktemp)"
+  # Clean up the temp openssl configs on any return path — under `set -e` a
+  # failed openssl call aborts the function before the explicit rm below.
+  trap 'rm -f "$ca_cnf" "$leaf_cnf"' RETURN
+
+  cat > "$ca_cnf" <<EOF
+[req]
+distinguished_name = dn
+x509_extensions = v3_ca
+prompt = no
+[dn]
+CN = Membrain Gateway CA
+O = Membrain
+[v3_ca]
+basicConstraints = critical, CA:TRUE, pathlen:0
+keyUsage = critical, keyCertSign, cRLSign
+subjectKeyIdentifier = hash
+nameConstraints = critical, permitted;DNS:${host}, excluded;IP:0.0.0.0/0.0.0.0, excluded;IP:0:0:0:0:0:0:0:0/0:0:0:0:0:0:0:0
+EOF
+
+  cat > "$leaf_cnf" <<EOF
+[v3_leaf]
+basicConstraints = CA:FALSE
+keyUsage = digitalSignature, keyEncipherment
+extendedKeyUsage = serverAuth
+subjectAltName = DNS:${host}
+EOF
+
+  openssl req -x509 -newkey rsa:2048 -nodes -days 825 \
+    -keyout "${certs_dir}/membrain-ca-key.pem" \
+    -out "${certs_dir}/membrain-ca.pem" \
+    -config "$ca_cnf" -extensions v3_ca 2>/dev/null
+
+  openssl req -newkey rsa:2048 -nodes \
+    -keyout "${certs_dir}/${host}-key.pem" \
+    -out "${certs_dir}/${host}.csr" \
+    -subj "/CN=${host}" 2>/dev/null
+
+  openssl x509 -req \
+    -in "${certs_dir}/${host}.csr" \
+    -CA "${certs_dir}/membrain-ca.pem" \
+    -CAkey "${certs_dir}/membrain-ca-key.pem" \
+    -CAcreateserial \
+    -out "${certs_dir}/${host}.pem" \
+    -days 825 \
+    -extfile "$leaf_cnf" -extensions v3_leaf 2>/dev/null
+
+  rm -f "${certs_dir}/${host}.csr" "${certs_dir}/membrain-ca.srl"
+
+  chmod 600 "${certs_dir}/${host}-key.pem"
+  if [ "${MEMBRAIN_RETAIN_CA_KEY:-0}" = "1" ]; then
+    chmod 600 "${certs_dir}/membrain-ca-key.pem"
+  else
+    # The CA key is only needed to sign the leaf (done above); remove it so no
+    # MITM-capable key is left on disk.
+    rm -f "${certs_dir}/membrain-ca-key.pem"
+  fi
+}
+
 # ─── .env helpers ────────────────────────────────────────
 
 ENV_FILE="${MEMBRAIN_HOME}/.env"
@@ -161,6 +240,18 @@ cmd_update() {
   echo "Updating Membrain..."
   git -C "${MEMBRAIN_HOME}/src" pull --ff-only
   cp "${MEMBRAIN_HOME}/src/deploy/docker-compose.yml" "${MEMBRAIN_HOME}/docker-compose.yml"
+  # Re-install the CLI wrapper so security fixes shipped IN the wrapper (e.g. the
+  # name-constrained proxy CA, C8) actually take effect on existing installs —
+  # previously `membrain update` only refreshed the gateway image. Write to a temp
+  # path and atomically rename so the currently-executing wrapper isn't corrupted
+  # mid-update. (review 2026-06-17)
+  if [ -f "${MEMBRAIN_HOME}/src/deploy/membrain-wrapper.sh" ]; then
+    if cp "${MEMBRAIN_HOME}/src/deploy/membrain-wrapper.sh" "${HOME}/.local/bin/.membrain.new" \
+       && chmod +x "${HOME}/.local/bin/.membrain.new"; then
+      mv "${HOME}/.local/bin/.membrain.new" "${HOME}/.local/bin/membrain"
+      echo "  CLI wrapper updated."
+    fi
+  fi
   docker compose -f "$COMPOSE_FILE" pull gateway
   docker compose -f "$COMPOSE_FILE" up -d gateway
   echo -e "${GREEN}Updated and restarted.${NC}"
@@ -270,52 +361,10 @@ cmd_enable() {
         return
       fi
 
-      # Generate certs if not already present
+      # Generate name-constrained certs if not already present (C8).
       if [ ! -f "${MEMBRAIN_HOME}/certs/membrain-ca.pem" ]; then
-        mkdir -p "${MEMBRAIN_HOME}/certs"
-
-        openssl req -x509 -newkey rsa:2048 -nodes -days 825 \
-          -keyout "${MEMBRAIN_HOME}/certs/membrain-ca-key.pem" \
-          -out "${MEMBRAIN_HOME}/certs/membrain-ca.pem" \
-          -subj "/CN=Membrain Gateway CA/O=Membrain" \
-          2>/dev/null
-
-        openssl req -newkey rsa:2048 -nodes \
-          -keyout "${MEMBRAIN_HOME}/certs/api.anthropic.com-key.pem" \
-          -out "${MEMBRAIN_HOME}/certs/api.anthropic.com.csr" \
-          -subj "/CN=api.anthropic.com" \
-          2>/dev/null
-
-        cat > "${MEMBRAIN_HOME}/certs/san.cnf" <<SANEOF
-[req]
-distinguished_name = req_dn
-[req_dn]
-[v3_leaf]
-basicConstraints = CA:FALSE
-subjectAltName = DNS:api.anthropic.com
-keyUsage = digitalSignature, keyEncipherment
-extendedKeyUsage = serverAuth
-SANEOF
-
-        openssl x509 -req \
-          -in "${MEMBRAIN_HOME}/certs/api.anthropic.com.csr" \
-          -CA "${MEMBRAIN_HOME}/certs/membrain-ca.pem" \
-          -CAkey "${MEMBRAIN_HOME}/certs/membrain-ca-key.pem" \
-          -CAcreateserial \
-          -out "${MEMBRAIN_HOME}/certs/api.anthropic.com.pem" \
-          -days 825 \
-          -extfile "${MEMBRAIN_HOME}/certs/san.cnf" \
-          -extensions v3_leaf \
-          2>/dev/null
-
-        rm -f "${MEMBRAIN_HOME}/certs/api.anthropic.com.csr" \
-              "${MEMBRAIN_HOME}/certs/san.cnf" \
-              "${MEMBRAIN_HOME}/certs/membrain-ca.srl"
-
-        chmod 700 "${MEMBRAIN_HOME}/certs"
-        chmod 600 "${MEMBRAIN_HOME}/certs/membrain-ca-key.pem"
-        chmod 600 "${MEMBRAIN_HOME}/certs/api.anthropic.com-key.pem"
-        info "Generated TLS certificates"
+        gen_proxy_certs "${MEMBRAIN_HOME}/certs" "api.anthropic.com"
+        info "Generated name-constrained TLS certificates (CA key removed)"
       fi
 
       # Trust the CA
@@ -454,15 +503,19 @@ cmd_help() {
   echo "Dashboard: http://localhost:8001"
 }
 
-case "${1:-help}" in
-  status)    cmd_status ;;
-  logs)      shift; cmd_logs "$@" ;;
-  stop)      cmd_stop ;;
-  start)     cmd_start ;;
-  update)    cmd_update ;;
-  enable)    shift; cmd_enable "$@" ;;
-  disable)   shift; cmd_disable "$@" ;;
-  addons)    cmd_addons ;;
-  uninstall) cmd_uninstall ;;
-  help|*)    cmd_help ;;
-esac
+# Only dispatch when executed directly — sourcing the script (e.g. from tests)
+# loads the functions without running a command.
+if [ "${BASH_SOURCE[0]}" = "${0}" ]; then
+  case "${1:-help}" in
+    status)    cmd_status ;;
+    logs)      shift; cmd_logs "$@" ;;
+    stop)      cmd_stop ;;
+    start)     cmd_start ;;
+    update)    cmd_update ;;
+    enable)    shift; cmd_enable "$@" ;;
+    disable)   shift; cmd_disable "$@" ;;
+    addons)    cmd_addons ;;
+    uninstall) cmd_uninstall ;;
+    help|*)    cmd_help ;;
+  esac
+fi
