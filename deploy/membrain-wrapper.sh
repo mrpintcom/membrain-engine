@@ -485,6 +485,21 @@ cmd_addons() {
   echo "Disable: membrain disable <addon>"
 }
 
+cmd_key() {
+  local sub="${1:-}"
+  shift 2>/dev/null || true
+  case "$sub" in
+    create)
+      # First-run bootstrap: mint an API key without needing an existing key.
+      docker compose -f "$COMPOSE_FILE" exec -T gateway python -m membrain.cli create-key "$@"
+      ;;
+    *)
+      echo "Usage: membrain key create [--role admin] [--project default] [--name NAME]"
+      return 1
+      ;;
+  esac
+}
+
 cmd_help() {
   echo "Usage: membrain <command>"
   echo ""
@@ -494,6 +509,7 @@ cmd_help() {
   echo "  start       Start Membrain"
   echo "  stop        Stop Membrain"
   echo "  update      Pull latest version and restart"
+  echo "  key create  Mint an API key (first-run bootstrap for REQUIRE_AUTH)"
   echo "  addons      List available add-ons and their status"
   echo "  enable      Enable an add-on (e.g. membrain enable ml-search)"
   echo "  disable     Disable an add-on"
@@ -516,6 +532,7 @@ if [ "${BASH_SOURCE[0]}" = "${0}" ]; then
     disable)   shift; cmd_disable "$@" ;;
     addons)    cmd_addons ;;
     uninstall) cmd_uninstall ;;
+    key)       shift; cmd_key "$@" ;;
     help|*)    cmd_help ;;
   esac
 fi

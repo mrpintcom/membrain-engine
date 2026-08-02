@@ -223,6 +223,11 @@ cp -r "${MEMBRAIN_HOME}/src/deploy/embedder" "${MEMBRAIN_HOME}/embedder"
 # Generate random credentials
 PG_PASS=$(openssl rand -hex 16)
 REDIS_PASS=$(openssl rand -hex 16)
+# PII-at-rest encryption key (Fernet: urlsafe-base64 32 bytes) — without this,
+# PII is stored in PLAINTEXT. Generated once at install (write-once).
+PII_KEY=$(openssl rand -base64 32 | tr '+/' '-_')
+# Pepper for API-key hashing (write-once; changing it invalidates existing keys).
+KEY_PEPPER=$(openssl rand -hex 32)
 
 # Write .env
 cat > "${MEMBRAIN_HOME}/.env" <<ENVEOF
@@ -231,6 +236,12 @@ POSTGRES_PASSWORD=${PG_PASS}
 REDIS_PASSWORD=${REDIS_PASS}
 DATABASE_URL=postgresql+asyncpg://membrain:${PG_PASS}@postgres:5432/membrain
 REDIS_URL=redis://:${REDIS_PASS}@redis:6379/0
+PII_ENCRYPTION_KEY=${PII_KEY}
+KEY_HASH_PEPPER=${KEY_PEPPER}
+# Auth is OFF by default because the gateway binds to 127.0.0.1 (loopback)
+# only — nothing is network-reachable. To expose it on a network, set
+# REQUIRE_AUTH=true AND provision a membrain key first; never expose with auth off.
+REQUIRE_AUTH=false
 ENVEOF
 chmod 600 "${MEMBRAIN_HOME}/.env"
 

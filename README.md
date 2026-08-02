@@ -33,10 +33,10 @@ The community build is licensed under Apache 2.0. Features marked **★ Enterpri
 |---|---|
 | **Detection** | 25+ PII patterns, fail-closed under scanner errors. Optional ML NER (BERT-based) with hybrid regex + NER mode — **★ Enterprise**. |
 | **Enforcement** | Six policy modes (`pass` / `log` / `alert` / `redact` / `block` / `confirm`) with per-project rules and human-in-the-loop approval. Tool-policy fnmatch globs with `allow` / `deny` / `approve` actions. |
-| **Memory** | Knowledge store on pgvector with semantic search, auto-extraction from responses, PII rescan on injection, federated cross-brain sharing under explicit policy. |
-| **Visibility** | Audit logging with a tamper-evident HMAC-SHA256 hash-chain, encrypted PII mapping, GDPR export and right-to-erasure, alert engine with webhook + Slack, Prometheus `/metrics`. |
+| **Memory** | Knowledge store on pgvector with semantic search. Every captured entry lands pending and private; it takes explicit human approval and then an explicit owner share before teammates see it, with attribution. PII rescan on injection. |
+| **Visibility** | Audit logging with a tamper-evident HMAC-SHA256 hash-chain, encrypted PII mapping, GDPR export and right-to-erasure, Prometheus `/metrics`. Alert engine (webhook + Slack) — **★ Enterprise**. |
 | **Routing** | Multi-provider (Anthropic, OpenAI, Claude CLI, Ollama, LiteLLM 100+ models), tier / cost / privacy-based routing, fallback chains, exact + semantic response caching. |
-| **Coverage** | Three ingress modes — application proxy (`/v1/messages`, `/v1/chat/completions`), transparent network proxy (TLS termination + SNI inspection), and MCP governance (`/mcp/v1/{server}`). |
+| **Coverage** | Two ingress modes — application proxy (`/v1/messages`, `/v1/chat/completions`) and transparent network proxy (TLS termination + SNI inspection). MCP governance (`/mcp/v1/{server}`) — **★ Enterprise**. |
 | **Trust** | Multi-tenant isolation (per-project cache, MCP registry, audit, knowledge), RBAC, peppered API-key hashing, atomic key rotation. OIDC SSO + SCIM provisioning — **★ Enterprise**. |
 
 ## Commands
@@ -49,6 +49,7 @@ membrain start     - resume
 membrain enable    - turn on an add-on (e.g. transparent-proxy)
 membrain disable   - turn off an add-on
 membrain addons    - list available add-ons and their state
+membrain key create - mint an API key (first-run bootstrap for REQUIRE_AUTH=true)
 membrain update    - pull the latest version
 membrain uninstall - clean removal
 ```

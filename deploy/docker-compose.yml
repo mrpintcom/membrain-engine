@@ -2,7 +2,10 @@ services:
   gateway:
     image: ghcr.io/mrpintcom/membrain:0.10.1
     ports:
-      - "8001:8000"
+      # Loopback-only: the gateway is an explicit local proxy (clients point
+      # ANTHROPIC_BASE_URL at http://localhost:8001). To expose it on a network,
+      # change to "8001:8000" AND set REQUIRE_AUTH=true with a provisioned key.
+      - "127.0.0.1:8001:8000"
     env_file: .env
     depends_on:
       postgres:
