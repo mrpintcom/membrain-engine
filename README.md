@@ -36,7 +36,7 @@ The community build is licensed under Apache 2.0. Features marked **★ Enterpri
 | **Memory** | Knowledge store on pgvector with semantic search. Every captured entry lands pending and private; it takes explicit human approval and then an explicit owner share before teammates see it, with attribution. PII rescan on injection. |
 | **Visibility** | Audit logging with a tamper-evident HMAC-SHA256 hash-chain, encrypted PII mapping, GDPR export and right-to-erasure, Prometheus `/metrics`. Alert engine (webhook + Slack) — **★ Enterprise**. |
 | **Routing** | Multi-provider (Anthropic, OpenAI, Claude CLI, Ollama, LiteLLM 100+ models), tier / cost / privacy-based routing, fallback chains, exact + semantic response caching. |
-| **Coverage** | Two ingress modes — application proxy (`/v1/messages`, `/v1/chat/completions`) and transparent network proxy (TLS termination + SNI inspection). MCP governance (`/mcp/v1/{server}`) — **★ Enterprise**. |
+| **Coverage** | Two ingress modes — application proxy (`/v1/messages`, `/v1/chat/completions`) and transparent network proxy (TLS termination + SNI inspection). Built-in team-brain MCP server (`/mcp/v1/team-brain`) for Claude Desktop / claude.ai. Governance of third-party MCP servers — **★ Enterprise**. |
 | **Trust** | Multi-tenant isolation (per-project cache, MCP registry, audit, knowledge), RBAC, peppered API-key hashing, atomic key rotation. OIDC SSO + SCIM provisioning — **★ Enterprise**. |
 
 ## Commands
