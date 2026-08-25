@@ -407,7 +407,7 @@ cmd_disable() {
     ml-search)
       step "Disabling ML Search..."
       profiles_remove "ml-search"
-      env_set "EMBEDDING_BACKEND" "local"
+      env_set "EMBEDDING_BACKEND" "onnx"
       docker compose -f "$COMPOSE_FILE" stop embedder 2>/dev/null || true
       docker compose -f "$COMPOSE_FILE" restart gateway
       info "ML Search disabled. Falling back to text search."
