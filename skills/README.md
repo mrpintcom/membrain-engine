@@ -6,7 +6,7 @@ uses — rather than a server sitting in a config file that nothing ever calls.
 | Skill | Fires when | Needs the gateway? |
 |---|---|---|
 | `membrain-recall` | before non-trivial work in familiar code | yes |
-| `membrain-remember` | a durable lesson emerges | yes |
+| `membrain-remember` | a durable lesson emerges — offers it in-conversation | yes |
 | `membrain-review-queue` | knowledge is waiting on a human decision | yes |
 | `membrain-mcp-audit` | "what can my MCP servers actually see?" | **no** |
 
@@ -53,6 +53,44 @@ That gate only works if someone opens the queue. The most common failure is not
 a bad entry; it is a queue nobody reviews, which looks like a safety control and
 is a graveyard. `membrain-review-queue` exists to make the ceremony small and
 frequent enough that it actually happens.
+
+## Optional: capture at compaction
+
+`hooks/compaction-capture.sh` is a `PreCompact` hook. Compaction is the one
+moment you *know* detail is about to be destroyed, which makes it the only time
+"is anything here worth keeping?" is a well-posed question — and unlike "once
+per session", it is a boundary the assistant can actually observe, because the
+system announces it.
+
+```bash
+mkdir -p ~/.claude/hooks
+cp /tmp/membrain-engine/skills/hooks/compaction-capture.sh ~/.claude/hooks/
+chmod +x ~/.claude/hooks/compaction-capture.sh
+```
+
+Then in `~/.claude/settings.json` (merge with existing hooks, do not replace):
+
+```json
+{ "hooks": { "PreCompact": [ { "hooks": [
+  { "type": "command",
+    "command": "$HOME/.claude/hooks/compaction-capture.sh",
+    "timeout": 5 } ] } ] } }
+```
+
+**It saves nothing.** Auto-compaction fires on volume, often while you are away
+or mid-task, and a hook that wrote entries unsupervised would rebuild the exact
+pile the review gate exists to prevent. It only makes sure the *opportunity*
+survives the compaction — a human still judges, one turn later.
+
+It nudges harder on a manual `/compact` (you are present and deliberate) than
+on an automatic one (you may be mid-flow), records a pointer to the
+pre-compaction transcript at `~/.claude/membrain/last-compaction`, and never
+copies transcript content — duplicating a whole conversation to a second file
+is a privacy liability, not a feature.
+
+Verify it after installing by running `/compact` and watching whether the
+assistant offers a lesson when the work warranted one, and stays quiet when it
+did not.
 
 ## Writing your own
 
