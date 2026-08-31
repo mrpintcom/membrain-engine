@@ -1,6 +1,6 @@
 services:
   gateway:
-    image: ghcr.io/mrpintcom/membrain:0.12.4
+    image: ghcr.io/mrpintcom/membrain:0.12.5
     ports:
       # Loopback-only: the gateway is an explicit local proxy (clients point
       # ANTHROPIC_BASE_URL at http://localhost:8001). To expose it on a network,
