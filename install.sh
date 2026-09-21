@@ -5,7 +5,7 @@
 #
 set -euo pipefail
 
-VERSION="0.12.6"
+VERSION="0.12.7"
 MEMBRAIN_HOME="${HOME}/.membrain"
 REPO_URL="https://github.com/mrpintcom/membrain-engine.git"
 
