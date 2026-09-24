@@ -1,6 +1,6 @@
 # MemBrain
 
-**The cognitive layer for AI — self-hosted, open-core.**
+**The cognitive layer for AI — self-hosted, free to run.**
 
 LLMs generate language. MemBrain provides everything else a brain needs around them — memory, threat detection, judgment, routing, audit, isolation, and operator visibility — as one integrated system, not bolted-on plugins.
 
@@ -27,7 +27,7 @@ membrain enable transparent-proxy
 
 ## What MemBrain does — the seven pillars
 
-The community build is licensed under Apache 2.0. Features marked **★ Enterprise** require a licensed add-on.
+The community build is free to self-host. Features marked **★ Enterprise** require a licensed add-on.
 
 | Pillar | What it covers |
 |---|---|
@@ -77,7 +77,7 @@ For server / Kubernetes deployments and the application-proxy and MCP-governance
 
 ## Editions
 
-MemBrain is **open-core**. The community gateway — everything above except the **★ Enterprise** items — is licensed under Apache 2.0 and is what this installer pulls and runs. Enterprise add-ons (ML NER, OIDC SSO + SCIM, and other licensed capabilities) are packaged separately and activated with a license. This repository distributes the installer and deploy manifests; it is not the gateway source tree.
+MemBrain ships in two editions. The community gateway — everything above except the **★ Enterprise** items — is free to self-host with no key and no account, and is what this installer pulls and runs. It is distributed as a prebuilt image: the gateway source is not public today, so "free" here means free to run, not open source. Enterprise add-ons (ML NER, OIDC SSO + SCIM, and other licensed capabilities) are packaged separately and activated with a license. This repository holds the installer, deploy manifests, the embedder sidecar and the Claude Code skills — those ARE Apache 2.0 and yours to read, fork and run. It is not the gateway source tree.
 
 ## Reporting issues
 
@@ -88,4 +88,4 @@ This is a distribution-only repository. Issues are intentionally disabled here. 
 
 ## License
 
-Apache 2.0 for the community gateway and this distribution repository. Enterprise add-ons are separately licensed.
+This distribution repository — installer, deploy manifests, embedder sidecar and skills — is Apache 2.0. The community gateway ships as a free prebuilt image; its source is not published today, so it is free to run rather than open source. Enterprise add-ons are separately licensed.
